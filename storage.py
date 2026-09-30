@@ -66,8 +66,15 @@ def _ensure_columns(wb, extra_keys: list[str]):
 
 
 def read_all() -> list[dict]:
+    return read_sheet('Общая')[1]
+
+
+def read_sheet(name: str) -> tuple[list, list[dict]]:
+    """Чтение любого листа: возвращает (заголовки, строки-словари)."""
     wb = _ensure_wb()
-    ws = wb['Общая']
+    if name not in wb.sheetnames:
+        return [], []
+    ws = wb[name]
     heads = _headers(ws)
     rows = []
     for r in ws.iter_rows(min_row=2, values_only=True):
@@ -80,7 +87,13 @@ def read_all() -> list[dict]:
         for k, _ in CORE:
             d.setdefault(k, '')
         rows.append(d)
-    return rows
+    return heads, rows
+
+
+def read_all_sheets() -> dict:
+    """Все листы: {имя: (заголовки, строки)}. Для вкладки Таблицы."""
+    wb = _ensure_wb()
+    return {s: read_sheet(s) for s in SHEETS if s in wb.sheetnames}
 
 
 def _row_dict_to_list(heads: list, d: dict) -> list:

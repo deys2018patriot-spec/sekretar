@@ -59,57 +59,84 @@ def load_secrets() -> dict:
 
 
 def pull_google_to_local() -> dict:
-    """Если clients.xlsx отсутствует, а Google подключен — скачать 'Общая' локально.
+    """Полное копирование ВСЕХ листов Google Sheets в локальный xlsx.
 
-    Использует только чтение Google Sheets API + запись через openpyxl
-    (минимум дублированной логики, storage.py не трогаем).
-    Возвращает {'ok': bool, 'rows': int, 'reason': str}.
+    Google Sheets — источник правды: при каждом старте (и по кнопке
+    «Обновить из Google») вся таблица переписывается из облака.
+    Если Google недоступен, а локальный файл есть — работаем с ним.
+    Возвращает {'ok': bool, 'rows': int (всего), 'sheets': {лист: строк}, 'reason': str}.
     """
     import storage
 
     xlsx = os.path.join(BASE, 'clients.xlsx')
-    if os.path.exists(xlsx) and os.path.getsize(xlsx) > 0:
-        return {'ok': True, 'rows': -1, 'reason': 'локальный файл уже есть'}
     try:
         import google_sync
     except Exception as e:
-        return {'ok': False, 'rows': 0, 'reason': f'нет google_sync: {e}'}
+        if os.path.exists(xlsx):
+            return {'ok': True, 'rows': -1, 'sheets': {}, 'reason': 'Google-модуль недоступен, работаю локально'}
+        return {'ok': False, 'rows': 0, 'sheets': {}, 'reason': f'нет google_sync: {e}'}
     try:
         sid = google_sync.get_sheet_id()
     except Exception as e:
-        return {'ok': False, 'rows': 0, 'reason': f'нет sheet id: {e}'}
+        return {'ok': False, 'rows': 0, 'sheets': {}, 'reason': f'нет sheet id: {e}'}
     if not sid:
-        return {'ok': False, 'rows': 0, 'reason': 'нет GOOGLE_SHEET_ID'}
+        return {'ok': False, 'rows': 0, 'sheets': {}, 'reason': 'нет GOOGLE_SHEET_ID'}
     if not os.path.exists(os.path.join(BASE, 'token.json')) and not os.environ.get('GOOGLE_TOKEN_JSON', '').strip():
-        return {'ok': False, 'rows': 0, 'reason': 'нет token.json'}
+        if os.path.exists(xlsx):
+            return {'ok': True, 'rows': -1, 'sheets': {}, 'reason': 'нет token.json, работаю локально'}
+        return {'ok': False, 'rows': 0, 'sheets': {}, 'reason': 'нет token.json'}
 
     try:
         svc = google_sync._service('sheets', 'v4')
-        res = svc.spreadsheets().values().get(
-            spreadsheetId=sid, range='Общая!A:ZZ').execute()
-        values = res.get('values', [])
     except Exception as e:
-        return {'ok': False, 'rows': 0, 'reason': f'ошибка чтения Sheets: {e}'}
-    if not values:
-        return {'ok': False, 'rows': 0, 'reason': 'лист Общая пуст'}
+        if os.path.exists(xlsx):
+            return {'ok': True, 'rows': -1, 'sheets': {}, 'reason': f'Google недоступен ({e}), работаю локально'}
+        return {'ok': False, 'rows': 0, 'sheets': {}, 'reason': f'ошибка подключения: {e}'}
 
-    header = [str(x or '').strip() for x in values[0]]
-    data_rows = [r for r in values[1:] if any(r)]
+    per_sheet: dict = {}
+    total = 0
     try:
         from openpyxl import Workbook
         wb = Workbook()
-        ws = wb.active
-        ws.title = 'Общая'
-        ws.append(header if header else [h for _, h in storage.CORE])
-        for r in data_rows:
-            ws.append(list(r) + [''] * max(0, len(ws[1]) - len(r)))
-        for s in storage.SHEETS[1:]:
-            if s not in wb.sheetnames:
-                wb.create_sheet(s).append(list(ws[1][c].value for c in range(len(ws[1]))))
+        first = True
+        for s in storage.SHEETS:
+            try:
+                res = svc.spreadsheets().values().get(
+                    spreadsheetId=sid, range=f'{s}!A:ZZ').execute()
+                values = res.get('values', [])
+            except Exception:
+                values = []
+            if not values:
+                header = [h for _, h in storage.CORE]
+                data_rows: list = []
+            else:
+                header = [str(x or '').strip() or f'col{i+1}' for i, x in enumerate(values[0])]
+                data_rows = [r for r in values[1:] if any(r)]
+            if first:
+                ws = wb.active
+                ws.title = s
+                first = False
+            else:
+                ws = wb.create_sheet(s) if s not in wb.sheetnames else wb[s]
+                if ws.max_row >= 1:
+                    ws.delete_rows(1, ws.max_row)
+                    ws.delete_cols(1, ws.max_column)
+            ws.append(header if header else [h for _, h in storage.CORE])
+            width = len(ws[1])
+            for r in data_rows:
+                ws.append(list(r) + [''] * max(0, width - len(r)))
+            per_sheet[s] = len(data_rows)
+            total += len(data_rows)
+        # убрать лишние листы (старые Смена 1..4 и т.п.)
+        for sn in list(wb.sheetnames):
+            if sn not in storage.SHEETS:
+                del wb[sn]
         wb.save(xlsx)
     except Exception as e:
-        return {'ok': False, 'rows': 0, 'reason': f'ошибка записи xlsx: {e}'}
-    return {'ok': True, 'rows': len(data_rows), 'reason': 'восстановлено из Google Sheets'}
+        if os.path.exists(xlsx) and total == 0:
+            return {'ok': True, 'rows': -1, 'sheets': {}, 'reason': f'ошибка записи xlsx ({e}), работаю локально'}
+        return {'ok': False, 'rows': 0, 'sheets': {}, 'reason': f'ошибка записи xlsx: {e}'}
+    return {'ok': True, 'rows': total, 'sheets': per_sheet, 'reason': 'скопировано из Google Sheets'}
 
 
 def bootstrap() -> dict:
