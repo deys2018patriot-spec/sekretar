@@ -247,11 +247,12 @@ with tab_tbl:
     if not all_sheets:
         st.info('Таблицы пока пусты.')
     for name, (heads, rows) in all_sheets.items():
-        st.markdown(f'**{name}** — {len(rows)} строк')
-        if not rows:
-            st.caption('Пусто')
-            continue
-        # порядок колонок как в шапке листа
-        import storage as _st
-        table = [{h: r.get(_st.HEADER_TO_KEY.get(h, h.lower()), '') for h in (heads or [])} for r in rows]
-        st.dataframe(table, use_container_width=True)
+        # каждая таблица сворачивается (Общая открыта по умолчанию)
+        with st.expander(f'{name} — {len(rows)} строк', expanded=(name == 'Общая')):
+            if not rows:
+                st.caption('Пусто')
+                continue
+            # порядок колонок как в шапке листа
+            import storage as _st
+            table = [{h: r.get(_st.HEADER_TO_KEY.get(h, h.lower()), '') for h in (heads or [])} for r in rows]
+            st.dataframe(table, use_container_width=True)
