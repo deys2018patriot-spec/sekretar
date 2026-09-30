@@ -1,0 +1,238 @@
+"""Агент: ИИ выполняет команды по таблицам (править/переносить/удалять/колонки).
+Песочница: только папка secretary + Google Sheets/Calendar. Дальше ноута не лезет.
+"""
+import os
+import re
+import json
+from datetime import datetime
+BASE = os.path.dirname(os.path.abspath(__file__))
+RULES_FILE = os.path.join(BASE, 'rules.json')
+
+
+def get_rules() -> list[str]:
+    import json
+    if os.path.exists(RULES_FILE):
+        try:
+            return json.load(open(RULES_FILE, encoding='utf-8'))
+        except Exception:
+            return []
+    return []
+
+
+def save_rule(text: str) -> int:
+    import json
+    rules = get_rules()
+    text = text.strip()
+    if text and text not in rules:
+        rules.append(text)
+        json.dump(rules, open(RULES_FILE, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+    return len(rules)
+
+SYSTEM = """Ты агент-исполнитель по таблице лагеря. Верни ТОЛЬКО JSON.
+Доступные действия (actions - список):
+- {"tool":"find","query":"Иванов"} — найти строки
+- {"tool":"update","query":"Иванов","fields":{"status":"Оплачено"}} — обновить найденные
+- {"tool":"update_id","id":"123456","fields":{"shift":"Зима 26"}} — обновить по ID
+- {"tool":"move","query":"Иванов","shift":"Зима 26"} — перенести в смену
+- {"tool":"delete","query":"Иванов"} — удалить найденные
+- {"tool":"add_column","name":"аллергия"} — новая колонка
+- {"tool":"remind","query":"Иванов","when":"2026-09-27T15:00:00"} — напоминание в календарь
+- {"tool":"clear_reminders"} — удалить ВСЕ напоминания (локальные + Calendar)
+- {"tool":"remember","text":"текст правила"} — запомнить бизнес-правило на будущее
+- {"tool":"clarify"} — если из команды непонятно кого/что делать
+Поля fields: fio_child,parent_fio,phone,age,shift,status,callback_dt,comment + любые новые (маленькими).
+Статусы: Новая, Перезвонить, Перезвонил, Думает, Оплачено, Отказ, Приехал. "Перезвонил" = звонок состоялся (напоминание снимается само). Смены строго: Осень 26, Зима 26, Весна 27 (понимай "зимняя смена/зима/защитник зима" как "Зима 26" и т.п.).
+ЦЕНЫ (рубли): полная 20000, со скидкой 17000, по рекомендации 15000. В полях extra сумма/скидка/причина_скидки используй их: "со скидкой" без суммы -> сумма "17000"; "по рекомендации" -> сумма "15000" + кто порекомендовал; явная сумма важнее.
+НИКОГДА не возвращай пустой actions. Если команда — указание/правило ("сумму пиши до скидки", "запомни что..."), верни {"tool":"remember"}. Если непонятно кого — верни clarify.
+Сейчас {now}. Команда: {cmd}
+Ответ ТОЛЬКО JSON вида {{"actions":[...]}}."""
+
+
+def _gemini_plan(cmd: str) -> dict | None:
+    key = os.environ.get('GEMINI_API_KEY', '').strip()
+    if not key:
+        return None
+    try:
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=key)
+        prompt = SYSTEM.replace('{now}', datetime.now().isoformat()).replace('{cmd}', cmd)
+        rules = get_rules()
+        if rules:
+            prompt += '\nЗапомненные правила (учитывай):\n' + '\n'.join(f'- {r}' for r in rules)
+        cfg = types.GenerateContentConfig(
+            temperature=0.0, response_mime_type='application/json',
+            http_options=types.HttpOptions(
+                timeout=20000,
+                retry_options=types.HttpRetryOptions(attempts=1)))
+        last = None
+        for model in ('gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-flash-lite-latest'):
+            try:
+                r = client.models.generate_content(
+                    model=model, contents=prompt, config=cfg)
+                raw = (r.text or '').strip().replace('```json', '').replace('```', '').strip()
+                data = json.loads(raw)
+                # толерантность: принимаем и {"actions":[...]}, и одиночное {"tool":...}, и голый список
+                if isinstance(data, list):
+                    return {'actions': data}
+                if isinstance(data, dict) and 'actions' not in data and 'tool' in data:
+                    return {'actions': [data]}
+                return data
+            except Exception as e:
+                last = e
+                continue
+        print(f'[agent gemini] {last}')
+        return None
+    except Exception as e:
+        print(f'[agent gemini] {e}')
+        return None
+
+
+def _rule_plan(cmd: str) -> dict:
+    """Простые команды без нейронки: перенеси/статус/удали/колонка/напомни."""
+    t = cmd.lower()
+    # имя/запрос: берем слова с заглавной или после ключевых слов, иначе весь текст минус глаголы
+    m = re.search(r'(?:перенеси|перемести|поставь|поменяй|обнови|удали|удалить|найди|напомни|запиши|записать|внеси|добавь|измени|изменить)\s+(.+?)(?:\s+во\s|\s+в\s|\s+на\s|\s+статус\s|$)', cmd, re.IGNORECASE)
+    query = (m.group(1).strip() if m else '').strip(' "\'')
+    # вычищаем служебное из запроса: "Тест Оплачено" -> "Тест"
+    query = re.sub(r'\b(оплачено|оплачен|отказ|перезвонить|приехал|думает|новая|статус|смен[ауы]|осень|зиму?|зимняя|зимнюю|весну?|весенняя|защитник|2[67])\b', '', query, flags=re.IGNORECASE).strip()
+    acts = []
+    if re.search(r'перенес|перемест', t):
+        try:
+            from brain import normalize_shift
+            shift = normalize_shift(cmd)
+        except Exception:
+            shift = ''
+        st = None
+        for s in ['перезвонил', 'оплачено', 'отказ', 'перезвонить', 'приехал', 'думает', 'новая']:
+            if s in t:
+                st = s.capitalize()
+                break
+        if shift and query:
+            acts.append({'tool': 'move', 'query': query, 'shift': shift})
+        if st and query:
+            acts.append({'tool': 'update', 'query': query, 'fields': {'status': st}})
+        if not acts and query:
+            acts.append({'tool': 'find', 'query': query})
+    elif re.search(r'удали', t):
+        if re.search(r'напоминани', t):
+            acts.append({'tool': 'clear_reminders'})
+        elif query:
+            acts.append({'tool': 'delete', 'query': query})
+    elif re.search(r'колонк', t):
+        mn = re.search(r'колонк\w*\s+([а-яёa-z ]+)', t)
+        if mn:
+            acts.append({'tool': 'add_column', 'name': mn.group(1).strip()})
+    elif re.search(r'статус|оплачен|отказ|перезвон|приехал', t):
+        st = 'Новая'
+        for k, v in {'перезвонил': 'Перезвонил', 'оплачен': 'Оплачено', 'оплат': 'Оплачено', 'отказ': 'Отказ',
+                     'перезвон': 'Перезвонить', 'приехал': 'Приехал', 'думает': 'Думает'}.items():
+            if k in t:
+                st = v
+                break
+        if query:
+            acts.append({'tool': 'update', 'query': query, 'fields': {'status': st}})
+    elif re.search(r'напомни|перезвони', t):
+        from brain import parse_callback_datetime
+        cb = parse_callback_datetime(cmd)
+        if query:
+            acts.append({'tool': 'remind', 'query': query,
+                         'when': cb.isoformat() if cb else ''})
+    elif re.search(r'запомни', t):
+        m2 = re.search(r'запомни\s*[:\-]?\s*(.+)', cmd, re.IGNORECASE)
+        if m2:
+            acts.append({'tool': 'remember', 'text': m2.group(1).strip()})
+    elif re.search(r'измени|правил', t):
+        # "измени про человека" без конкретики — обновить некого, скажем кого нашли
+        if query and len(query) > 2:
+            acts.append({'tool': 'find', 'query': query})
+        else:
+            acts.append({'tool': 'clarify'})
+    elif re.search(r'запомни|на будущее|всегда|пиши', t):
+        # указание-правило без глагола действия: запоминаем как правило
+        acts.append({'tool': 'remember', 'text': cmd.strip()})
+    if not acts:
+        acts.append({'tool': 'find', 'query': query or cmd.strip()[:60]})
+    return {'actions': acts}
+
+
+def execute(cmd: str) -> str:
+    import storage as st
+    from brain import fix_layout
+    cmd = fix_layout(cmd)
+    print(f'[agent] команда: {cmd}')
+    plan = _gemini_plan(cmd)
+    if plan:
+        print(f'[agent] план gemini: {plan}')
+    if not plan or not plan.get('actions'):
+        # пустой план от модели = откат на правила, а не молчание
+        print('[agent] пустой план, иду по правилам')
+        plan = _rule_plan(cmd)
+    print(f'[agent] выполняю: {plan}')
+    log = []
+    for a in plan.get('actions', []):
+        tool = a.get('tool')
+        try:
+            if tool == 'find':
+                rows = st.find_ids(a.get('query', ''))
+                if rows:
+                    log.append(f"🔎 {a.get('query')}: {len(rows)} шт. " +
+                               '; '.join(f"{r.get('fio_child')} [{r.get('status')}] id={r.get('id')}" for r in rows[:5]))
+                else:
+                    last = [f"{r.get('fio_child')} [{r.get('status')}]" for r in st.read_all()[-5:]]
+                    log.append(f"🔎 «{a.get('query')}» не нашел. Последние в базе: {'; '.join(last) or 'пусто'}")
+            elif tool == 'clarify':
+                last = [f"{r.get('fio_child')} [{r.get('status')}]" for r in st.read_all()[-5:]]
+                log.append('❓ Кого именно изменить? Напиши имя, например: «поставь Иванову Оплачено». В базе: ' + '; '.join(last))
+            elif tool == 'remember':
+                n = save_rule(a.get('text', ''))
+                log.append(f"📝 Запомнил правило №{n}: {a.get('text', '')}")
+            elif tool == 'rules':
+                rules = get_rules()
+                log.append('📝 Правила:\n' + '\n'.join(f'{i+1}. {r}' for i, r in enumerate(rules)) if rules else '📝 Правил пока нет. Скажи: «запомни: ...»')
+            elif tool == 'update':
+                rows = st.find_ids(a.get('query', ''))
+                n = sum(1 for r in rows if st.update_by_id(r['id'], a.get('fields', {})))
+                log.append(f'✏️ Обновлено {n}/{len(rows)}: {a.get("fields")}')
+            elif tool == 'update_id':
+                ok = st.update_by_id(a['id'], a.get('fields', {}))
+                log.append(f"✏️ id={a['id']}: {'ок' if ok else 'не найден'}")
+            elif tool == 'move':
+                rows = st.find_ids(a.get('query', ''))
+                n = sum(1 for r in rows if st.set_shift(r['id'], a['shift']))
+                log.append(f"📦 Перенесено {n} в {a['shift']}")
+            elif tool == 'delete':
+                rows = st.find_ids(a.get('query', ''))
+                q = (a.get('query', '') or '').strip().lower()
+                # предохранитель: "удали все/всех" без конкретики — клиентов не трогаем
+                if q in ('все', 'всё', 'всех', 'вce', '') or len(rows) > 5:
+                    log.append(f"⛔ Не удаляю: запрос «{a.get('query')}» задевает {len(rows)} записей. Уточни имя.")
+                else:
+                    n = sum(1 for r in rows if st.delete_by_id(r['id']))
+                    log.append(f'🗑 Удалено {n}')
+            elif tool == 'clear_reminders':
+                from reminders import clear_all
+                r = clear_all()
+                parts = []
+                if r['local'] or r['calendar'] or r.get('tasks'):
+                    parts.append(f"🗑 Удалено: локально {r['local']}, Calendar {r['calendar']}, Задачи {r.get('tasks', 0)}")
+                else:
+                    parts.append('✅ Чистить нечего — напоминаний нет ни локально, ни в Календаре')
+                if r.get('tasks_err'):
+                    parts.append('⚠️ Задачи Google не подключены: включи Tasks API и перезайди (python auth_google.py)')
+                log.append('\n'.join(parts))
+            elif tool == 'add_column':
+                heads = st.add_column(a['name'])
+                log.append(f"🆕 Колонка '{a['name']}', всего: {len(heads)}")
+            elif tool == 'remind':
+                from reminders import add_local_reminder
+                rows = st.find_ids(a.get('query', ''))
+                for r in rows[:3]:
+                    if a.get('when'):
+                        add_local_reminder(r.get('fio_child', ''), a['when'], r.get('phone', ''))
+                log.append(f"📅 Напоминание на {a.get('when')} для {len(rows)} шт.")
+            else:
+                log.append(f'❓ {tool} — не знаю')
+        except Exception as e:
+            log.append(f'⚠️ {tool}: {e}')
+    return '\n'.join(log) if log else 'Ничего не сделал'

@@ -1,0 +1,10 @@
+﻿*.key
+token.json
+client_secret.json
+sheet.id
+reminders.json
+rules.json
+deleted_log.txt
+*.xlsx
+__pycache__/
+*.pyc
