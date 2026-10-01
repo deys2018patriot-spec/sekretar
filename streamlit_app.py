@@ -61,6 +61,9 @@ with tab_req:
     # отложенная очистка/вставка в поле (менять ключ виджета после его создания нельзя)
     if st.session_state.pop('_clear_raw', False):
         st.session_state.pop('raw_text', None)
+        st.session_state.pop('voice_rec', None)
+        st.session_state.pop('voice_file', None)
+        st.session_state.pop('voice_done', None)
     _vt = st.session_state.pop('_voice_text', None)
     if _vt is not None:
         st.session_state['raw_text'] = _vt
@@ -102,7 +105,7 @@ with tab_req:
         if hasattr(st, 'audio_input'):
             try:
                 st.caption('🎤 Надиктуй в микрофон (ru-RU):')
-                audio = st.audio_input('Надиктуй заявку')
+                audio = st.audio_input('Надиктуй заявку', key='voice_rec')
             except Exception as e:
                 audio = None
                 st.caption(f'🎤 Микрофон недоступен ({e}) — загрузи аудиофайл ниже.')
@@ -199,7 +202,7 @@ with tab_req:
         if st.button('🧹 Очистить', use_container_width=True):
             st.session_state['pending'] = None
             st.session_state['dups'] = []
-            st.session_state['raw_text'] = ''
+            st.session_state['_clear_raw'] = True
             st.rerun()
 
     if btn_save:
