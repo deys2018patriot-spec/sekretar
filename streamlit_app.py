@@ -58,6 +58,12 @@ if due:
 tab_req, tab_tbl = st.tabs(['📝 Заявки', '📊 Таблицы'])
 
 with tab_req:
+    # отложенная очистка поля (менять ключ виджета после его создания нельзя)
+    if st.session_state.pop('_clear_raw', False):
+        st.session_state.pop('raw_text', None)
+    _last = st.session_state.pop('_last_card', None)
+    if _last:
+        st.success(_last)
     # --- ввод каши ---
     st.subheader('Что случилось? Вставь кашу текстом или надиктуй:')
     raw_text = st.text_area('Текст заявки', height=150, key='raw_text',
@@ -222,9 +228,11 @@ with tab_req:
                         st.stop()
                 st.success(card)
                 say(card + f"\nИсходник: {st.session_state.get('pending_raw', '')[:200]}")
+                st.session_state['_last_card'] = card
+                st.session_state['_clear_raw'] = True
                 st.session_state['pending'] = None
                 st.session_state['dups'] = []
-                st.session_state['raw_text'] = ''
+                st.rerun()
 
     # --- ИИ-командная строка ---
     st.divider()
