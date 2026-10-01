@@ -489,3 +489,51 @@ with tab_tbl:
                         st.stop()
                 st.session_state['_last_edit'] = '✅ ' + rep
                 st.rerun()
+            st.divider()
+            st.caption('✏️ Или правим запись вручную (без таблицы):')
+            opts = []
+            for i, r in enumerate(rows):
+                preview = ' | '.join(str(r.get(_st.HEADER_TO_KEY.get(h, h.lower()), ''))
+                                     for h in (heads or [])[:3])
+                opts.append(f'{i + 1}. ' + (preview.strip(' |')[:60] or '(пустая строка)'))
+            _fxk = f'fx_{name}'
+            if _fxk in st.session_state and st.session_state[_fxk] >= len(rows):
+                st.session_state[_fxk] = 0
+            sel = st.selectbox('Строка', list(range(len(rows))),
+                               format_func=lambda i: opts[i], key=_fxk)
+            cur = rows[sel]
+            if cur.get('id'):
+                st.caption(f"ID: {cur.get('id')} (не меняется)")
+            vals = {}
+            for ci, h in enumerate(heads or []):
+                k = _st.HEADER_TO_KEY.get(h, h.lower())
+                if k == 'id':
+                    continue
+                vals[h] = st.text_input(h, value=str(cur.get(k, '')), key=f'fx_{name}_{sel}_{ci}')
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button('💾 Сохранить запись', key=f'fxs_{name}'):
+                    base = [{h: r.get(_st.HEADER_TO_KEY.get(h, h.lower()), '') for h in (heads or [])}
+                            for r in rows]
+                    base[sel] = {h: vals.get(h, base[sel][h]) for h in (heads or [])}
+                    with st.spinner('Сохраняю (пишу в Google)...'):
+                        try:
+                            rep = _st.apply_table_edits(name, heads, rows, base)
+                        except Exception as e:
+                            st.error(f'Не сохранилось: {e}')
+                            st.stop()
+                    st.session_state['_last_edit'] = '✅ ' + rep
+                    st.rerun()
+            with c2:
+                if st.button('🗑 Удалить строку', key=f'fxd_{name}'):
+                    base = [{h: r.get(_st.HEADER_TO_KEY.get(h, h.lower()), '') for h in (heads or [])}
+                            for r in rows]
+                    del base[sel]
+                    with st.spinner('Удаляю (пишу в Google)...'):
+                        try:
+                            rep = _st.apply_table_edits(name, heads, rows, base)
+                        except Exception as e:
+                            st.error(f'Не удалилось: {e}')
+                            st.stop()
+                    st.session_state['_last_edit'] = '✅ ' + rep
+                    st.rerun()
