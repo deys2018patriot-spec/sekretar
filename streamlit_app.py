@@ -461,8 +461,9 @@ with tab_tbl:
                             import io as _io
                             import yadisk
                             y = yadisk.YaDisk(token=tok)
-                            if not y.exists('disk:/Лагерь/Файлы'):
-                                y.mkdir('disk:/Лагерь/Файлы')
+                            for _d in ('disk:/Лагерь', 'disk:/Лагерь/Файлы'):
+                                if not y.exists(_d):
+                                    y.mkdir(_d)
                             y.upload(_io.BytesIO(upf.getvalue()),
                                      f'disk:/Лагерь/Файлы/{upf.name}', overwrite=True)
                             arch = ' + оригинал на Яндекс.Диске'
