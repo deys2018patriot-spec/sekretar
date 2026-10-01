@@ -58,9 +58,13 @@ if due:
 tab_req, tab_tbl = st.tabs(['📝 Заявки', '📊 Таблицы'])
 
 with tab_req:
-    # отложенная очистка поля (менять ключ виджета после его создания нельзя)
+    # отложенная очистка/вставка в поле (менять ключ виджета после его создания нельзя)
     if st.session_state.pop('_clear_raw', False):
         st.session_state.pop('raw_text', None)
+    _vt = st.session_state.pop('_voice_text', None)
+    if _vt is not None:
+        st.session_state['raw_text'] = _vt
+        st.info('Проверь распознанный текст и жми «Внести».')
     _last = st.session_state.pop('_last_card', None)
     if _last:
         st.success(_last)
@@ -107,9 +111,8 @@ with tab_req:
                 if st.session_state.get('voice_done') != aid:
                     with st.spinner('🎧 Распознаю...'):
                         try:
-                            st.session_state['raw_text'] = recognize_wav_bytes(audio.getvalue())
+                            st.session_state['_voice_text'] = recognize_wav_bytes(audio.getvalue())
                             st.session_state['voice_done'] = aid
-                            st.info('Проверь распознанный текст и жми «Внести».')
                             st.rerun()
                         except Exception as e:
                             st.error(f'Не распознано: {e}. Попробуй ещё раз или загрузи файл.')
@@ -119,8 +122,7 @@ with tab_req:
         if up is not None and st.button('🎧 Распознать файл'):
             with st.spinner('🎧 Распознаю файл...'):
                 try:
-                    st.session_state['raw_text'] = recognize_wav_bytes(up.getvalue())
-                    st.info('Проверь распознанный текст и жми «Внести».')
+                    st.session_state['_voice_text'] = recognize_wav_bytes(up.getvalue())
                     st.rerun()
                 except Exception as e:
                     st.error(f'Не распознано: {e}. Нужна разборчивая русская речь.')
@@ -275,6 +277,9 @@ with tab_req:
 
 with tab_tbl:
     # --- Таблицы: полная копия Google Sheets (все листы) ---
+    _le = st.session_state.pop('_last_edit', None)
+    if _le:
+        st.success(_le)
     st.subheader('📊 Таблицы — копия Google Sheets')
     st.caption('Вся таблица копируется из Google при каждом открытии и по кнопке ниже.')
     if st.button('🔄 Обновить из Google', use_container_width=True):
@@ -374,5 +379,5 @@ with tab_tbl:
                     except Exception as e:
                         st.error(f'Не сохранилось: {e}')
                         st.stop()
-                st.success('✅ ' + rep)
+                st.session_state['_last_edit'] = '✅ ' + rep
                 st.rerun()
