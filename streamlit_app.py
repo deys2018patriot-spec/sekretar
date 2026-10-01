@@ -58,22 +58,18 @@ if due:
 tab_req, tab_tbl = st.tabs(['📝 Заявки', '📊 Таблицы'])
 
 with tab_req:
-    # отложенная очистка/вставка в поле (менять ключ виджета после его создания нельзя)
-    if st.session_state.pop('_clear_raw', False):
-        st.session_state.pop('raw_text', None)
-        st.session_state.pop('voice_rec', None)
-        st.session_state.pop('voice_file', None)
-        st.session_state.pop('voice_done', None)
-    _vt = st.session_state.pop('_voice_text', None)
-    if _vt is not None:
-        st.session_state['raw_text'] = _vt
-        st.info('Проверь распознанный текст и жми «Внести».')
+    # Ключи поля/аудио с поколением: сброс = новый ключ (фронт 1.64 игнорит
+    # удаление значения, а новый виджет всегда стартует чистым).
+    gen = st.session_state.get('ta_gen', 0)
+    RK, VK, FK = f'raw_text_{gen}', f'voice_rec_{gen}', f'voice_file_{gen}'
     _last = st.session_state.pop('_last_card', None)
     if _last:
         st.success(_last)
+    if st.session_state.pop('_voice_info', False):
+        st.info('Проверь распознанный текст и жми «Внести».')
     # --- ввод каши ---
     st.subheader('Что случилось? Вставь кашу текстом или надиктуй:')
-    raw_text = st.text_area('Текст заявки', height=150, key='raw_text',
+    raw_text = st.text_area('Текст заявки', height=150, key=RK,
                             placeholder='Например: Позвонила мама Иванова Мария, сын Тимофей Иванов 9 лет, ...')
 
     # --- голос: микрофон в браузере ИЛИ загрузка голосового файла ---
@@ -105,7 +101,7 @@ with tab_req:
         if hasattr(st, 'audio_input'):
             try:
                 st.caption('🎤 Надиктуй в микрофон (ru-RU):')
-                audio = st.audio_input('Надиктуй заявку', key='voice_rec')
+                audio = st.audio_input('Надиктуй заявку', key=VK)
             except Exception as e:
                 audio = None
                 st.caption(f'🎤 Микрофон недоступен ({e}) — загрузи аудиофайл ниже.')
@@ -114,21 +110,31 @@ with tab_req:
                 if st.session_state.get('voice_done') != aid:
                     with st.spinner('🎧 Распознаю...'):
                         try:
-                            st.session_state['_voice_text'] = recognize_wav_bytes(audio.getvalue())
-                            st.session_state['voice_done'] = aid
-                            st.rerun()
+                            text = recognize_wav_bytes(audio.getvalue())
                         except Exception as e:
+                            text = ''
                             st.error(f'Не распознано: {e}. Попробуй ещё раз или загрузи файл.')
+                    st.session_state['voice_done'] = aid
+                    if text:
+                        st.session_state['ta_gen'] = gen + 1
+                        st.session_state[f'raw_text_{gen + 1}'] = text
+                        st.session_state['_voice_info'] = True
+                        st.rerun()
         st.caption('...или загрузи голосовое (wav/mp3/ogg/m4a — например, пересланное из мессенджера):')
         up = st.file_uploader('Голосовой файл', type=['wav', 'mp3', 'ogg', 'm4a', 'flac'],
-                              key='voice_file', label_visibility='collapsed')
+                              key=FK, label_visibility='collapsed')
         if up is not None and st.button('🎧 Распознать файл'):
             with st.spinner('🎧 Распознаю файл...'):
                 try:
-                    st.session_state['_voice_text'] = recognize_wav_bytes(up.getvalue())
-                    st.rerun()
+                    text = recognize_wav_bytes(up.getvalue())
                 except Exception as e:
+                    text = ''
                     st.error(f'Не распознано: {e}. Нужна разборчивая русская речь.')
+            if text:
+                st.session_state['ta_gen'] = gen + 1
+                st.session_state[f'raw_text_{gen + 1}'] = text
+                st.session_state['_voice_info'] = True
+                st.rerun()
 
     # --- разбор и сохранение ---
     st.session_state.setdefault('pending', None)
@@ -202,11 +208,12 @@ with tab_req:
         if st.button('🧹 Очистить', use_container_width=True):
             st.session_state['pending'] = None
             st.session_state['dups'] = []
-            st.session_state['_clear_raw'] = True
+            st.session_state['voice_done'] = None
+            st.session_state['ta_gen'] = gen + 1
             st.rerun()
 
     if btn_save:
-        raw = fix_layout((st.session_state.get('raw_text') or '').strip())
+        raw = fix_layout((st.session_state.get(RK) or '').strip())
         if not raw:
             st.warning('Вставь текст заявки.')
         else:
@@ -250,7 +257,8 @@ with tab_req:
                 st.success(card)
                 say(card + f"\nИсходник: {st.session_state.get('pending_raw', '')[:200]}")
                 st.session_state['_last_card'] = card
-                st.session_state['_clear_raw'] = True
+                st.session_state['voice_done'] = None
+                st.session_state['ta_gen'] = gen + 1
                 st.session_state['pending'] = None
                 st.session_state['dups'] = []
                 st.rerun()
@@ -303,63 +311,8 @@ with tab_tbl:
     if not all_sheets:
         st.info('Таблицы пока пусты.')
 
-    def _norm_cell(v) -> str:
-        if v is None:
-            return ''
-        if isinstance(v, float) and v != v:  # NaN
-            return ''
-        return str(v)
-
-    def save_table_edits(name: str, heads: list, rows: list, edited) -> str:
-        """Правки из data_editor: изменённые ячейки, новые и удалённые строки."""
-        import storage as _st
-        recs = edited.to_dict('records') if hasattr(edited, 'to_dict') else list(edited)
-        key_of = {h: _st.HEADER_TO_KEY.get(h, h.lower()) for h in (heads or [])}
-        core_keys = [kk for kk, _ in _st.CORE]
-        n_old = len(rows)
-        upd, new_n, del_n = 0, 0, 0
-        seen_ids = set()
-        for i, rec in enumerate(recs):
-            if i < n_old:
-                cid = str(rows[i].get('id', ''))
-                if not cid:
-                    continue
-                seen_ids.add(cid)
-                fields = {}
-                for h in (heads or []):
-                    k = key_of[h]
-                    if k in ('id', 'created'):
-                        continue
-                    nv = _norm_cell(rec.get(h))
-                    if nv != rows[i].get(k, ''):
-                        fields[k] = nv
-                if fields and _st.update_by_id(cid, fields):
-                    upd += 1
-            else:
-                d, extra = {}, {}
-                for h in (heads or []):
-                    v = _norm_cell(rec.get(h))
-                    if not v:
-                        continue
-                    k = key_of[h]
-                    if k in core_keys:
-                        d[k] = v
-                    elif k not in ('id', 'created'):
-                        extra[k] = v
-                if not any(d.values()) and not extra:
-                    continue
-                d.setdefault('status', 'Новая')
-                d['extra'] = extra
-                _st.upsert(d)
-                new_n += 1
-        for r in rows:
-            cid = str(r.get('id', ''))
-            if cid and cid not in seen_ids and _st.delete_by_id(cid):
-                del_n += 1
-        return f'Правок: {upd}, новых строк: {new_n}, удалено: {del_n}.'
-
     for name, (heads, rows) in all_sheets.items():
-        # каждая таблица сворачивается (Общая открыта по умолчанию); правится прямо тут
+        # каждая таблица сворачивается (Общая открыта по умолчанию); все правятся прямо тут
         with st.expander(f'{name} — {len(rows)} строк', expanded=(name == 'Общая')):
             if not rows:
                 st.caption('Пусто')
@@ -367,19 +320,16 @@ with tab_tbl:
             # порядок колонок как в шапке листа
             import storage as _st
             table = [{h: r.get(_st.HEADER_TO_KEY.get(h, h.lower()), '') for h in (heads or [])} for r in rows]
-            if name != 'Общая':
-                st.dataframe(table, use_container_width=True)
-                st.caption('Сезонный лист — проекция. Правки: через «Общую» или команду ИИ.')
-                continue
-            # Общую можно править прямо тут (строки добавляются/удаляются тоже)
-            st.caption('Двойной клик по ячейке — править, Enter — готово. Потом «Сохранить правки».')
+            st.caption('Двойной клик по ячейке — править, Enter — готово. Потом «Сохранить правки».'
+                       + ('' if name == 'Общая' else ' Правки сезона уходят и в «Общую»; удалённое здесь удаляется везде.'))
             lock = ([heads[0]] if heads else []) + ([heads[1]] if len(heads) > 1 else [])
             edited = st.data_editor(table, use_container_width=True, num_rows='dynamic',
                                     key=f'ed_{name}', hide_index=True, disabled=lock)
             if st.button('💾 Сохранить правки', key=f'sv_{name}'):
                 with st.spinner('Сохраняю правки (пишу в Google)...'):
                     try:
-                        rep = save_table_edits(name, heads, rows, edited)
+                        recs_ed = edited.to_dict('records') if hasattr(edited, 'to_dict') else list(edited)
+                        rep = _st.apply_table_edits(name, heads, rows, recs_ed)
                     except Exception as e:
                         st.error(f'Не сохранилось: {e}')
                         st.stop()

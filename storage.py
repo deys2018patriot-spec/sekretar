@@ -347,6 +347,96 @@ def _sheet_gid(svc, sid: str, title: str) -> int:
     return 0
 
 
+def update_in_sheet(sheet: str, cid: str, fields: dict) -> bool:
+    """Правит ячейки строки напрямую в указанном листе (без зеркалирования).
+
+    Используется для сезонных листов: зеркало в Общую + Google делает вызывающий
+    код через update_by_id. Возвращает True если строка найдена.
+    """
+    wb = _ensure_wb()
+    if sheet not in wb.sheetnames:
+        return False
+    heads = _headers(wb[sheet])
+    ws = wb[sheet]
+    for idx, r in enumerate(list(ws.iter_rows(min_row=2)), start=2):
+        if str(r[0].value or '') == str(cid):
+            for col_i, h in enumerate(heads, start=1):
+                key = HEADER_TO_KEY.get(h, h.lower())
+                if key in fields and fields[key] not in (None, ''):
+                    ws.cell(idx, col_i).value = str(fields[key])
+            wb.save(FILE)
+            return True
+    return False
+
+
+def apply_table_edits(sheet: str, heads: list, rows: list, recs: list) -> str:
+    """Применяет правки таблицы: изменённые ячейки, новые и удалённые строки.
+
+    sheet — 'Общая' или сезон ('Осень 26'...). Правки сезона пишутся и в сезонный
+    лист, и в Общую (через update_by_id, он же пушит в Google). Удаление — везде.
+    recs — записи вида {заголовок: значение} (уже без DataFrame).
+    Возвращает сводку 'Правок: N, новых строк: M, удалено: K.'
+    """
+    key_of = {h: HEADER_TO_KEY.get(h, h.lower()) for h in (heads or [])}
+    core_keys = [kk for kk, _ in CORE]
+
+    def norm(v) -> str:
+        if v is None:
+            return ''
+        if isinstance(v, float) and v != v:  # NaN
+            return ''
+        return str(v)
+
+    n_old = len(rows)
+    upd, new_n, del_n = 0, 0, 0
+    seen_ids = set()
+    for i, rec in enumerate(recs):
+        if i < n_old:
+            cid = str(rows[i].get('id', ''))
+            if not cid:
+                continue
+            seen_ids.add(cid)
+            fields = {}
+            for h in (heads or []):
+                k = key_of[h]
+                if k in ('id', 'created'):
+                    continue
+                nv = norm(rec.get(h))
+                if nv != rows[i].get(k, ''):
+                    fields[k] = nv
+            if not fields:
+                continue
+            if sheet == 'Общая':
+                if update_by_id(cid, fields):
+                    upd += 1
+            elif update_in_sheet(sheet, cid, fields) and update_by_id(cid, fields):
+                upd += 1
+        else:
+            d, extra = {}, {}
+            for h in (heads or []):
+                v = norm(rec.get(h))
+                if not v:
+                    continue
+                k = key_of[h]
+                if k in core_keys:
+                    d[k] = v
+                elif k not in ('id', 'created'):
+                    extra[k] = v
+            if not any(d.values()) and not extra:
+                continue
+            d.setdefault('status', 'Новая')
+            if sheet != 'Общая':
+                d.setdefault('shift', sheet)
+            d['extra'] = extra
+            upsert(d)
+            new_n += 1
+    for r in rows:
+        cid = str(r.get('id', ''))
+        if cid and cid not in seen_ids and delete_by_id(cid):
+            del_n += 1
+    return f'Правок: {upd}, новых строк: {new_n}, удалено: {del_n}.'
+
+
 def set_shift(cid: str, shift: str) -> bool:
     return update_by_id(cid, {'shift': shift})
 
