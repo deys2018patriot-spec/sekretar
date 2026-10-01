@@ -497,10 +497,13 @@ with tab_tbl:
                                      for h in (heads or [])[:3])
                 opts.append(f'{i + 1}. ' + (preview.strip(' |')[:60] or '(пустая строка)'))
             _fxk = f'fx_{name}'
-            if _fxk in st.session_state and st.session_state[_fxk] >= len(rows):
-                st.session_state[_fxk] = 0
-            sel = st.selectbox('Строка', list(range(len(rows))),
-                               format_func=lambda i: opts[i], key=_fxk)
+            _cur_n = st.session_state.get(_fxk, 1)
+            if not isinstance(_cur_n, int) or _cur_n < 1 or _cur_n > len(rows):
+                st.session_state[_fxk] = 1
+            sel = st.number_input('№ строки', min_value=1, max_value=max(len(rows), 1),
+                                  step=1, key=_fxk) - 1
+            sel = max(0, min(sel, len(rows) - 1))
+            st.caption(opts[sel] if sel < len(opts) else '')
             cur = rows[sel]
             if cur.get('id'):
                 st.caption(f"ID: {cur.get('id')} (не меняется)")
