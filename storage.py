@@ -91,9 +91,45 @@ def read_sheet(name: str) -> tuple[list, list[dict]]:
 
 
 def read_all_sheets() -> dict:
-    """Все листы: {имя: (заголовки, строки)}. Для вкладки Таблицы."""
+    """Все листы книги: {имя: (заголовки, строки)}. Для вкладки Таблицы."""
     wb = _ensure_wb()
-    return {s: read_sheet(s) for s in SHEETS if s in wb.sheetnames}
+    return {s: read_sheet(s) for s in wb.sheetnames}
+
+
+def write_sheet_local(sheet: str, header: list, rows: list) -> int:
+    """Полностью заменяет/создаёт лист локально (для импорта файлов).
+
+    Возвращает число записанных строк.
+    """
+    from openpyxl import Workbook
+    if os.path.exists(FILE):
+        wb = load_workbook(FILE)
+    else:
+        wb = Workbook()
+    if sheet in wb.sheetnames:
+        ws = wb[sheet]
+        if ws.max_row >= 1:
+            ws.delete_rows(1, ws.max_row)
+        if ws.max_column >= 1:
+            ws.delete_cols(1, ws.max_column)
+    else:
+        ws = wb.create_sheet(sheet)
+    header = [str(h or '') for h in header] or ['A']
+    ws.append(header)
+    width = max([len(header)] + [len(r) for r in rows] + [1])
+    for r in rows:
+        ws.append([str(x or '') for x in list(r)] + [''] * (width - len(r)))
+    for s in SHEETS:
+        if s not in wb.sheetnames:
+            wb.create_sheet(s).append([h for _, h in CORE])
+    # убрать служебный пустой лист openpyxl, если остался
+    for sn in list(wb.sheetnames):
+        ws0 = wb[sn]
+        if ws0.max_row == 1 and ws0.max_column == 1 and not ws0['A1'].value and sn != sheet:
+            if len(wb.sheetnames) > 1:
+                del wb[sn]
+    wb.save(FILE)
+    return len(rows)
 
 
 def _row_dict_to_list(heads: list, d: dict) -> list:
@@ -310,7 +346,7 @@ def update_by_id(cid: str, fields: dict) -> bool:
 def delete_by_id(cid: str) -> bool:
     wb = _ensure_wb()
     found = False
-    for s in SHEETS:
+    for s in wb.sheetnames:
         ws = wb[s]
         for idx, r in enumerate(list(ws.iter_rows(min_row=2)), start=2):
             if str(r[0].value or '') == str(cid):
@@ -322,18 +358,19 @@ def delete_by_id(cid: str) -> bool:
         try:
             import google_sync
             if google_sync.get_sheet_id() and os.path.exists(google_sync.TOKEN):
-                svc = google_sync._service('sheets', 'v4')
-                sid = google_sync.get_sheet_id()
-                for s in SHEETS:
-                    cur = svc.spreadsheets().values().get(spreadsheetId=sid, range=f'{s}!A:A').execute().get('values', [])
-                    for i, r in enumerate(cur, start=1):
-                        if r and str(r[0]) == str(cid) and i > 1:
-                            svc.spreadsheets().batchUpdate(spreadsheetId=sid, body={
-                                'requests': [{'deleteDimension': {
-                                    'range': {'sheetId': _sheet_gid(svc, sid, s),
-                                              'dimension': 'ROWS', 'startIndex': i - 1, 'endIndex': i}}}]})\
-                                .execute()
-                            break
+                with google_sync._API_LOCK:
+                    svc = google_sync._service('sheets', 'v4')
+                    sid = google_sync.get_sheet_id()
+                    for s in google_sync.list_sheets(sid, _svc=svc):
+                        cur = svc.spreadsheets().values().get(spreadsheetId=sid, range=f'{s}!A:A').execute().get('values', [])
+                        for i, r in enumerate(cur, start=1):
+                            if r and str(r[0]) == str(cid) and i > 1:
+                                svc.spreadsheets().batchUpdate(spreadsheetId=sid, body={
+                                    'requests': [{'deleteDimension': {
+                                        'range': {'sheetId': _sheet_gid(svc, sid, s),
+                                                  'dimension': 'ROWS', 'startIndex': i - 1, 'endIndex': i}}}]})\
+                                    .execute()
+                                break
         except Exception as e:
             print(f'[Sheets delete] {e}')
     return found

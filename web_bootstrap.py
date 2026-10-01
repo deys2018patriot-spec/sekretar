@@ -121,7 +121,8 @@ def _do_pull_google_to_local() -> dict:
         wb = Workbook()
         first = True
         with google_sync._API_LOCK:
-            for s in storage.SHEETS:
+            titles = google_sync.list_sheets(sid, _svc=svc) or list(storage.SHEETS)
+            for s in titles:
                 try:
                     res = svc.spreadsheets().values().get(
                         spreadsheetId=sid, range=f'{s}!A:ZZ').execute()
@@ -149,10 +150,13 @@ def _do_pull_google_to_local() -> dict:
                     ws.append(list(r) + [''] * max(0, width - len(r)))
                 per_sheet[s] = len(data_rows)
                 total += len(data_rows)
-        # убрать лишние листы (старые Смена 1..4 и т.п.)
+        # убрать лишнее (старые Смена 1..4 и т.п.), сезоны из SHEETS — всегда держать
         for sn in list(wb.sheetnames):
-            if sn not in storage.SHEETS:
+            if sn not in per_sheet and sn not in storage.SHEETS:
                 del wb[sn]
+        for s in storage.SHEETS:
+            if s not in wb.sheetnames:
+                wb.create_sheet(s).append([h for _, h in storage.CORE])
         wb.save(xlsx)
     except Exception as e:
         if os.path.exists(xlsx) and total == 0:

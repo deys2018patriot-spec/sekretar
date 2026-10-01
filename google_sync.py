@@ -81,6 +81,40 @@ def _drop_service(api: str, ver: str) -> None:
         _SVC_CACHE.pop((api, ver), None)
 
 
+def list_sheets(spreadsheet_id: str | None = None, _svc=None) -> list:
+    """Все названия листов таблицы. Пустой список при недоступности."""
+    try:
+        sid = spreadsheet_id or get_sheet_id()
+        if not sid:
+            return []
+        svc = _svc or _service('sheets', 'v4')
+        meta = svc.spreadsheets().get(spreadsheetId=sid).execute()
+        return [s['properties']['title'] for s in meta.get('sheets', [])]
+    except Exception:
+        return []
+
+
+def push_table(sheet: str, header: list, rows: list, _svc=None) -> dict:
+    """Заливает ВЕСЬ лист одним батчем (быстро для импортов): шапка + строки.
+
+    Возвращает {'ok': True, 'rows': N}.
+    """
+    sid = get_sheet_id()
+    if not sid:
+        raise RuntimeError('Нет ID таблицы')
+    svc = _svc or _service('sheets', 'v4')
+    ensure_sheet_structure(sid, header, [sheet], _svc=svc)
+    width = max([len(header)] + [len(r) for r in rows] + [1])
+    head = list(header) + [''] * (width - len(header))
+    body = [head] + [list(r) + [''] * (width - len(r)) for r in rows]
+    with _API_LOCK:
+        svc.spreadsheets().values().clear(spreadsheetId=sid, range=f'{sheet}!A:ZZ').execute()
+        svc.spreadsheets().values().update(
+            spreadsheetId=sid, range=f'{sheet}!A1',
+            valueInputOption='USER_ENTERED', body={'values': [[str(x or '') for x in r] for r in body]}).execute()
+    return {'ok': True, 'rows': len(rows)}
+
+
 def create_calendar_event(title: str, iso_dt: str, desc: str = ''):
     """Создает событие 'Перезвонить' с напоминанием за 15 мин."""
     from datetime import datetime, timedelta

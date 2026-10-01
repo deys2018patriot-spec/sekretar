@@ -18,6 +18,22 @@ from storage import read_all, upsert, read_all_sheets
 from reminders import add_local_reminder, due_reminders
 
 st.set_page_config(page_title='Секретарь лагеря', page_icon='📋', layout='centered')
+st.markdown('''<style>
+/* Убрать стандартную серую дымку спиннера */
+[data-testid="stSpinner"] { visibility: hidden !important; height: 0 !important; }
+/* Радужный светящийся ободок, пока сайт думает (виден любой спиннер) */
+div[data-testid="stAppViewContainer"]:has(div[data-testid="stSpinner"])::after {
+  content: ""; position: fixed; inset: 6px; pointer-events: none; z-index: 9999999;
+  border-radius: 18px; padding: 4px;
+  background: linear-gradient(60deg,#ff004c,#ff8a00,#ffee00,#00e676,#00b0ff,#a100ff,#ff004c);
+  background-size: 300% 300%;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  animation: rainbow-flow 2.5s linear infinite;
+  filter: drop-shadow(0 0 14px rgba(255,0,220,.55)) drop-shadow(0 0 30px rgba(0,180,255,.35));
+}
+@keyframes rainbow-flow { to { background-position: 300% 0; } }
+</style>''', unsafe_allow_html=True)
 st.title('📋 Секретарь лагеря')
 
 
@@ -310,6 +326,144 @@ with tab_tbl:
         st.error(f'Не смог прочитать таблицы: {e}')
     if not all_sheets:
         st.info('Таблицы пока пусты.')
+
+    def _num(v) -> str:
+        if isinstance(v, float) and v.is_integer():
+            return str(int(v))
+        return str(v if v is not None else '')
+
+    def parse_table_file(fname: str, raw: bytes) -> tuple:
+        """Любой табличный файл → (шапка, строки). xlsx/xls/ods/csv/json."""
+        import io
+        ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else ''
+        if ext in ('xlsx', 'xlsm'):
+            from openpyxl import load_workbook
+            ws = load_workbook(io.BytesIO(raw), data_only=True).active
+            vals = list(ws.iter_rows(values_only=True))
+            vals = [r for r in vals if any(v not in (None, '') for v in (r or ()))]
+            if not vals:
+                return [], []
+            header = [str(x or '').strip() or f'col{i + 1}' for i, x in enumerate(vals[0])]
+            return header, [[_num(x) for x in r] + [''] * max(0, len(header) - len(r)) for r in vals[1:]]
+        if ext == 'xls':
+            import xlrd
+            sh = xlrd.open_workbook(file_contents=raw).sheet_by_index(0)
+            vals = [[sh.cell_value(r, c) for c in range(sh.ncols)] for r in range(sh.nrows)]
+            vals = [r for r in vals if any(str(v).strip() for v in r)]
+            if not vals:
+                return [], []
+            header = [str(x or '').strip() or f'col{i + 1}' for i, x in enumerate(vals[0])]
+            return header, [[_num(x) for x in r] + [''] * max(0, len(header) - len(r)) for r in vals[1:]]
+        if ext == 'ods':
+            from odf.opendocument import load as odf_load
+            from odf.table import table as odf_table, table_row
+            from odf.text import p as odf_p
+            doc = odf_load(io.BytesIO(raw))
+            tabs = doc.getElementsByType(odf_table)
+            if not tabs:
+                return [], []
+            grid: list = []
+            for row in tabs[0].getElementsByType(table_row):
+                rep = int(row.getAttribute('numberrowsrepeated') or 1)
+                cells: list = []
+                for cell in row.childNodes:
+                    tag = getattr(cell, 'tagName', '')
+                    if tag == 'table:covered-table-cell':
+                        cells.append('')
+                    elif tag == 'table:table-cell':
+                        crep = int(cell.getAttribute('numbercolumnsrepeated') or 1)
+                        txt = ''.join(n.data for p in cell.getElementsByType(odf_p)
+                                      for n in p.childNodes if n.nodeType == n.TEXT_NODE)
+                        cells.extend([txt] * crep)
+                grid.extend([list(cells) for _ in range(rep)])
+            grid = [r for r in grid if any(str(v).strip() for v in r)]
+            if not grid:
+                return [], []
+            header = [str(x or '').strip() or f'col{i + 1}' for i, x in enumerate(grid[0])]
+            return header, [[str(x or '') for x in r] + [''] * max(0, len(header) - len(r)) for r in grid[1:]]
+        if ext in ('csv', 'tsv', 'txt'):
+            import csv
+            text = None
+            for enc in ('utf-8-sig', 'cp1251'):
+                try:
+                    text = raw.decode(enc)
+                    break
+                except Exception:
+                    continue
+            if text is None:
+                raise ValueError('не смог прочитать кодировку (нужны UTF-8 или CP1251)')
+            sample = text[:2000]
+            if ext == 'tsv':
+                delim = '\t'
+            else:
+                delim = ';' if sample.count(';') >= sample.count(',') else ','
+                if delim == ',' and ',' not in sample and '\t' in sample:
+                    delim = '\t'
+            vals = [r for r in csv.reader(io.StringIO(text), delimiter=delim)
+                    if any(c.strip() for c in r)]
+            if not vals:
+                return [], []
+            header = [c.strip() or f'col{i + 1}' for i, c in enumerate(vals[0])]
+            return header, [list(r) + [''] * max(0, len(header) - len(r)) for r in vals[1:]]
+        if ext == 'json':
+            import json
+            obj = json.loads(raw.decode('utf-8-sig'))
+            lst = obj if isinstance(obj, list) else (obj.get('rows') or obj.get('data') or [])
+            if not lst:
+                return [], []
+            keys: list = []
+            for d in lst:
+                for k in (d or {}).keys():
+                    if k not in keys:
+                        keys.append(str(k))
+            return keys, [[str((d or {}).get(k, '')) for k in keys] for d in lst]
+        raise ValueError(f'формат .{ext or "?"} не поддерживаю (xlsx, xls, ods, csv, json)')
+
+    with st.expander('📎 Прикрепить файл таблицы (xlsx, xls, ods, csv, json)', expanded=False):
+        st.caption('Файл станет листом здесь и в Google Sheets — там хранится навсегда. '
+                   'Оригинал уйдёт на Яндекс.Диск, если задан YANDEX_DISK_TOKEN.')
+        upf = st.file_uploader('Файл таблицы', type=['xlsx', 'xlsm', 'xls', 'ods', 'csv', 'tsv', 'txt', 'json'],
+                               key='table_file', label_visibility='collapsed')
+        if upf is not None and st.button('📥 Импортировать как лист'):
+            with st.spinner('Импортирую...'):
+                try:
+                    header, rows_f = parse_table_file(upf.name, upf.getvalue())
+                    if not header:
+                        st.error('Файл пустой.')
+                        st.stop()
+                    base = (upf.name.rsplit('.', 1)[0] if '.' in upf.name else upf.name)
+                    base = ''.join(c if (c.isalnum() or c in ' _-') else '_' for c in base).strip()[:30] or 'Лист'
+                    import storage as _st2
+                    _st2.write_sheet_local(base, header, rows_f)
+                    pushed = ''
+                    try:
+                        import google_sync as _gs
+                        if _gs.get_sheet_id():
+                            with _gs._API_LOCK:
+                                _svc2 = _gs._service('sheets', 'v4')
+                                _gs.push_table(base, header, rows_f, _svc=_svc2)
+                            pushed = ' + Google Sheets (навсегда)'
+                    except Exception as e:
+                        pushed = f' (в Google не улетело: {e})'
+                    arch = ''
+                    tok = os.environ.get('YANDEX_DISK_TOKEN', '').strip()
+                    if tok:
+                        try:
+                            import io as _io
+                            import yadisk
+                            y = yadisk.YaDisk(token=tok)
+                            if not y.exists('disk:/Лагерь/Файлы'):
+                                y.mkdir('disk:/Лагерь/Файлы')
+                            y.upload(_io.BytesIO(upf.getvalue()),
+                                     f'disk:/Лагерь/Файлы/{upf.name}', overwrite=True)
+                            arch = ' + оригинал на Яндекс.Диске'
+                        except Exception as e:
+                            arch = f' (Яндекс: {str(e)[:120]})'
+                    st.session_state['_last_edit'] = (
+                        f'✅ Лист «{base}»: {len(rows_f)} строк{pushed}{arch}.')
+                    st.rerun()
+                except Exception as e:
+                    st.error(f'Не импортировалось: {e}')
 
     for name, (heads, rows) in all_sheets.items():
         # каждая таблица сворачивается (Общая открыта по умолчанию); все правятся прямо тут
