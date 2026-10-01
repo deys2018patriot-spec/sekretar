@@ -179,19 +179,21 @@ def upsert(data: dict) -> tuple[str, str, list[str]]:
                 break
     wb.save(FILE)
 
-    # Google Sheets (не роняем локалку)
+    # Google Sheets (не роняем локалку; один клиент на всю операцию — память 512МБ)
     try:
         import google_sync
         if google_sync.get_sheet_id() and os.path.exists(google_sync.TOKEN):
             _sheets = ['Общая'] + ([shift] if shift in SHEETS[1:] else [])
-            google_sync.ensure_sheet_structure(google_sync.get_sheet_id(), heads, _sheets)
-            for r in ws.iter_rows(min_row=2, values_only=True):
-                if str(r[0]) == cid:
-                    vals = [str(x or '') for x in r] + [''] * (len(heads) - len(r))
-                    google_sync.push_row(vals[:len(heads)], 'Общая')
-                    if shift in SHEETS[1:]:
-                        google_sync.push_row(vals[:len(heads)], shift)
-                    break
+            with google_sync._API_LOCK:
+                _svc = google_sync._service('sheets', 'v4')
+                google_sync.ensure_sheet_structure(google_sync.get_sheet_id(), heads, _sheets, _svc=_svc)
+                for r in ws.iter_rows(min_row=2, values_only=True):
+                    if str(r[0]) == cid:
+                        vals = [str(x or '') for x in r] + [''] * (len(heads) - len(r))
+                        google_sync.push_row(vals[:len(heads)], 'Общая', _svc=_svc)
+                        if shift in SHEETS[1:]:
+                            google_sync.push_row(vals[:len(heads)], shift, _svc=_svc)
+                        break
     except Exception as e:
         print(f'[Sheets] только локально ({e})')
     created = [k for k in new_cols if k not in [h.lower() for h in _headers(wb["Общая"])[:-len(new_cols)]]] if new_cols else []
@@ -222,15 +224,17 @@ def _sync_row_to_google(wb, heads, cid: str, shift: str = ''):
         import google_sync
         if google_sync.get_sheet_id() and os.path.exists(google_sync.TOKEN):
             _sheets = ['Общая'] + ([shift] if shift in SHEETS[1:] else [])
-            google_sync.ensure_sheet_structure(google_sync.get_sheet_id(), heads, _sheets)
-            ws = wb['Общая']
-            for r in ws.iter_rows(min_row=2, values_only=True):
-                if str(r[0]) == cid:
-                    vals = [str(x or '') for x in r] + [''] * (len(heads) - len(r))
-                    google_sync.push_row(vals[:len(heads)], 'Общая')
-                    if shift in SHEETS[1:]:
-                        google_sync.push_row(vals[:len(heads)], shift)
-                    break
+            with google_sync._API_LOCK:
+                _svc = google_sync._service('sheets', 'v4')
+                google_sync.ensure_sheet_structure(google_sync.get_sheet_id(), heads, _sheets, _svc=_svc)
+                ws = wb['Общая']
+                for r in ws.iter_rows(min_row=2, values_only=True):
+                    if str(r[0]) == cid:
+                        vals = [str(x or '') for x in r] + [''] * (len(heads) - len(r))
+                        google_sync.push_row(vals[:len(heads)], 'Общая', _svc=_svc)
+                        if shift in SHEETS[1:]:
+                            google_sync.push_row(vals[:len(heads)], shift, _svc=_svc)
+                        break
     except Exception as e:
         print(f'[Sheets] {e}')
 

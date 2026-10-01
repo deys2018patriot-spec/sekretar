@@ -120,34 +120,35 @@ def _do_pull_google_to_local() -> dict:
         from openpyxl import Workbook
         wb = Workbook()
         first = True
-        for s in storage.SHEETS:
-            try:
-                res = svc.spreadsheets().values().get(
-                    spreadsheetId=sid, range=f'{s}!A:ZZ').execute()
-                values = res.get('values', [])
-            except Exception:
-                values = []
-            if not values:
-                header = [h for _, h in storage.CORE]
-                data_rows: list = []
-            else:
-                header = [str(x or '').strip() or f'col{i+1}' for i, x in enumerate(values[0])]
-                data_rows = [r for r in values[1:] if any(r)]
-            if first:
-                ws = wb.active
-                ws.title = s
-                first = False
-            else:
-                ws = wb.create_sheet(s) if s not in wb.sheetnames else wb[s]
-                if ws.max_row >= 1:
-                    ws.delete_rows(1, ws.max_row)
-                    ws.delete_cols(1, ws.max_column)
-            ws.append(header if header else [h for _, h in storage.CORE])
-            width = len(ws[1])
-            for r in data_rows:
-                ws.append(list(r) + [''] * max(0, width - len(r)))
-            per_sheet[s] = len(data_rows)
-            total += len(data_rows)
+        with google_sync._API_LOCK:
+            for s in storage.SHEETS:
+                try:
+                    res = svc.spreadsheets().values().get(
+                        spreadsheetId=sid, range=f'{s}!A:ZZ').execute()
+                    values = res.get('values', [])
+                except Exception:
+                    values = []
+                if not values:
+                    header = [h for _, h in storage.CORE]
+                    data_rows: list = []
+                else:
+                    header = [str(x or '').strip() or f'col{i+1}' for i, x in enumerate(values[0])]
+                    data_rows = [r for r in values[1:] if any(r)]
+                if first:
+                    ws = wb.active
+                    ws.title = s
+                    first = False
+                else:
+                    ws = wb.create_sheet(s) if s not in wb.sheetnames else wb[s]
+                    if ws.max_row >= 1:
+                        ws.delete_rows(1, ws.max_row)
+                        ws.delete_cols(1, ws.max_column)
+                ws.append(header if header else [h for _, h in storage.CORE])
+                width = len(ws[1])
+                for r in data_rows:
+                    ws.append(list(r) + [''] * max(0, width - len(r)))
+                per_sheet[s] = len(data_rows)
+                total += len(data_rows)
         # убрать лишние листы (старые Смена 1..4 и т.п.)
         for sn in list(wb.sheetnames):
             if sn not in storage.SHEETS:

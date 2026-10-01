@@ -5,6 +5,15 @@
   sheet.id - ID гугл-таблицы (создается в auth_google.py или вручную)
 """
 import os
+import threading
+import time
+
+# Один переиспользуемый API-клиент: discovery.build() парсит многомегабайтную
+# схему и на 512МБ инстансе (Render Free) роняет процесс при частых вызовах.
+# Плюс RLock — httplib2 не потокобезопасен, а Streamlit гоняет скрипт в потоках.
+_API_LOCK = threading.RLock()
+_SVC_CACHE: dict = {}
+_SVC_TTL = 3000  # секунд (токен живёт ~час)
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TOKEN = os.path.join(BASE, 'token.json')
@@ -54,11 +63,22 @@ def get_creds():
 
 def _service(api: str, ver: str):
     from googleapiclient.discovery import build
-    try:
-        from httplib2 import Http
-        return build(api, ver, credentials=get_creds(), http=Http(timeout=25))
-    except Exception:
-        return build(api, ver, credentials=get_creds())
+    with _API_LOCK:
+        hit = _SVC_CACHE.get((api, ver))
+        if hit and time.time() - hit[1] < _SVC_TTL:
+            return hit[0]
+        try:
+            from httplib2 import Http
+            svc = build(api, ver, credentials=get_creds(), http=Http(timeout=25))
+        except Exception:
+            svc = build(api, ver, credentials=get_creds())
+        _SVC_CACHE[(api, ver)] = (svc, time.time())
+        return svc
+
+
+def _drop_service(api: str, ver: str) -> None:
+    with _API_LOCK:
+        _SVC_CACHE.pop((api, ver), None)
 
 
 def create_calendar_event(title: str, iso_dt: str, desc: str = ''):
@@ -83,10 +103,11 @@ def get_sheet_id() -> str:
     return os.environ.get('SPREADSHEET_ID', '').strip()
 
 
-def ensure_sheet_structure(spreadsheet_id: str, headers: list | None = None, sheets: list | None = None):
+def ensure_sheet_structure(spreadsheet_id: str, headers: list | None = None, sheets: list | None = None,
+                           _svc=None):
     """Создает листы Общая + сезоны и шапку (с учетом новых колонок ИИ)."""
     sheets = sheets or ['Общая', 'Осень 26', 'Зима 26', 'Весна 27']
-    svc = _service('sheets', 'v4')
+    svc = _svc or _service('sheets', 'v4')
     meta = svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
     have = {s['properties']['title'] for s in meta.get('sheets', [])}
     need = sheets
@@ -188,12 +209,12 @@ def list_own_events(text: str = 'Перезвонить') -> list:
              'own': SELF_MARK in str(e.get('description', ''))} for e in items]
 
 
-def push_row(row: list, sheet: str = 'Общая'):
+def push_row(row: list, sheet: str = 'Общая', _svc=None):
     """Upsert по ID (колонка A): обновляет если ID уже есть, иначе добавляет."""
     sid = get_sheet_id()
     if not sid:
         raise RuntimeError('Нет ID таблицы')
-    svc = _service('sheets', 'v4')
+    svc = _svc or _service('sheets', 'v4')
     cid = str(row[0])
     try:
         cur = svc.spreadsheets().values().get(spreadsheetId=sid, range=f'{sheet}!A:A').execute().get('values', [])
