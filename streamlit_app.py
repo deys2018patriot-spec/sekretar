@@ -21,19 +21,22 @@ st.set_page_config(page_title='Секретарь лагеря', page_icon='📋
 st.markdown('''<style>
 /* Убрать стандартную серую дымку спиннера */
 [data-testid="stSpinner"] { visibility: hidden !important; height: 0 !important; }
-/* Радужный светящийся ободок, пока сайт думает (виден любой спиннер) */
-div[data-testid="stAppViewContainer"]:has(div[data-testid="stSpinner"])::after {
-  content: ""; position: fixed; inset: 6px; pointer-events: none; z-index: 9999999;
-  border-radius: 18px; padding: 4px;
+/* Радужный светящийся ободок на всю рамку, пока сайт думает (виден любой спиннер).
+   Плавное появление/уход через opacity-transition постоянного div. */
+.think-glow-frame {
+  position: fixed; inset: 0; pointer-events: none; z-index: 9999999;
+  border-radius: 22px; padding: 5px;
   background: linear-gradient(60deg,#ff004c,#ff8a00,#ffee00,#00e676,#00b0ff,#a100ff,#ff004c);
   background-size: 300% 300%;
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor; mask-composite: exclude;
-  animation: rainbow-flow 2.5s linear infinite;
-  filter: drop-shadow(0 0 14px rgba(255,0,220,.55)) drop-shadow(0 0 30px rgba(0,180,255,.35));
+  opacity: 0; transition: opacity .7s ease;
+  animation: rainbow-flow 3s linear infinite;
+  filter: drop-shadow(0 0 16px rgba(255,0,220,.55)) drop-shadow(0 0 34px rgba(0,180,255,.35));
 }
+body:has(div[data-testid="stSpinner"]) .think-glow-frame { opacity: 1; }
 @keyframes rainbow-flow { to { background-position: 300% 0; } }
-</style>''', unsafe_allow_html=True)
+</style><div class="think-glow-frame"></div>''', unsafe_allow_html=True)
 st.title('📋 Секретарь лагеря')
 
 
