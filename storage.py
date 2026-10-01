@@ -376,6 +376,36 @@ def delete_by_id(cid: str) -> bool:
     return found
 
 
+def delete_row_at(sheet: str, row1: int) -> bool:
+    """Удаляет строку по номеру (1-based, шапка = 1) локально и в Google.
+
+    Для строк-фрагментов без ID (ручное удаление через сайт).
+    """
+    wb = _ensure_wb()
+    if sheet not in wb.sheetnames:
+        return False
+    ws = wb[sheet]
+    if row1 < 2 or row1 > ws.max_row:
+        return False
+    ws.delete_rows(row1)
+    wb.save(FILE)
+    try:
+        import google_sync
+        if google_sync.get_sheet_id() and os.path.exists(google_sync.TOKEN):
+            with google_sync._API_LOCK:
+                svc = google_sync._service('sheets', 'v4')
+                sid = google_sync.get_sheet_id()
+                svc.spreadsheets().batchUpdate(spreadsheetId=sid, body={
+                    'requests': [{'deleteDimension': {
+                        'range': {'sheetId': _sheet_gid(svc, sid, sheet),
+                                  'dimension': 'ROWS',
+                                  'startIndex': row1 - 1, 'endIndex': row1}}}]})\
+                    .execute()
+    except Exception as e:
+        print(f'[Sheets delete-at] {e}')
+    return True
+
+
 def _sheet_gid(svc, sid: str, title: str) -> int:
     meta = svc.spreadsheets().get(spreadsheetId=sid).execute()
     for s in meta.get('sheets', []):
@@ -406,24 +436,63 @@ def update_in_sheet(sheet: str, cid: str, fields: dict) -> bool:
     return False
 
 
+def _norm_cell(v) -> str:
+    if v is None:
+        return ''
+    if isinstance(v, float) and v != v:  # NaN
+        return ''
+    return str(v)
+
+
+def _google_write_row(sheet: str, row1: int, vals: list) -> None:
+    """Перезаписывает строку листа (1-based, шапка = 1) в Google."""
+    import google_sync
+    with google_sync._API_LOCK:
+        svc = google_sync._service('sheets', 'v4')
+        sid = google_sync.get_sheet_id()
+        svc.spreadsheets().values().update(
+            spreadsheetId=sid, range=f'{sheet}!{row1}:{row1}',
+            valueInputOption='USER_ENTERED',
+            body={'values': [[str(x or '') for x in vals]]}).execute()
+
+
+def _google_append_row(sheet: str, vals: list) -> None:
+    import google_sync
+    with google_sync._API_LOCK:
+        svc = google_sync._service('sheets', 'v4')
+        sid = google_sync.get_sheet_id()
+        svc.spreadsheets().values().append(
+            spreadsheetId=sid, range=f'{sheet}!A:ZZ',
+            valueInputOption='USER_ENTERED',
+            body={'values': [[str(x or '') for x in vals]]}).execute()
+
+
+def _google_ok() -> bool:
+    try:
+        import google_sync
+        return bool(google_sync.get_sheet_id() and os.path.exists(google_sync.TOKEN))
+    except Exception:
+        return False
+
+
 def apply_table_edits(sheet: str, heads: list, rows: list, recs: list) -> str:
     """Применяет правки таблицы: изменённые ячейки, новые и удалённые строки.
 
-    sheet — 'Общая' или сезон ('Осень 26'...). Правки сезона пишутся и в сезонный
-    лист, и в Общую (через update_by_id, он же пушит в Google). Удаление — везде.
+    Системные листы (Общая + сезоны) — по ID с зеркалированием в Общую и Google.
+    Вольные листы (импорты) — чисто позиционно. Строки-фрагменты без ID —
+    позиционно (правка/удаление) в любом листе.
     recs — записи вида {заголовок: значение} (уже без DataFrame).
     Возвращает сводку 'Правок: N, новых строк: M, удалено: K.'
     """
+    if sheet in SHEETS:
+        return _apply_core_edits(sheet, heads, rows, recs)
+    return _apply_free_edits(sheet, heads, rows, recs)
+
+
+def _apply_core_edits(sheet: str, heads: list, rows: list, recs: list) -> str:
     key_of = {h: HEADER_TO_KEY.get(h, h.lower()) for h in (heads or [])}
     core_keys = [kk for kk, _ in CORE]
-
-    def norm(v) -> str:
-        if v is None:
-            return ''
-        if isinstance(v, float) and v != v:  # NaN
-            return ''
-        return str(v)
-
+    norm = _norm_cell
     n_old = len(rows)
     upd, new_n, del_n = 0, 0, 0
     seen_ids = set()
@@ -431,7 +500,7 @@ def apply_table_edits(sheet: str, heads: list, rows: list, recs: list) -> str:
         if i < n_old:
             cid = str(rows[i].get('id', ''))
             if not cid:
-                continue
+                continue  # фрагменты без ID — отдельным проходом ниже
             seen_ids.add(cid)
             fields = {}
             for h in (heads or []):
@@ -467,9 +536,80 @@ def apply_table_edits(sheet: str, heads: list, rows: list, recs: list) -> str:
             d['extra'] = extra
             upsert(d)
             new_n += 1
+    # фрагменты без ID — отдельным проходом по исходным строкам:
+    # правка пишется позиционно, пропавшая строка удаляется позиционно.
+    # Выполняем снизу вверх, чтобы удаления не сдвигали цели.
+    frag_ops: list = []
+    for j, r in enumerate(rows):
+        if str(r.get('id', '')):
+            continue
+        old_sig = tuple(r.get(key_of[h], '') for h in (heads or []))
+        if j < len(recs) and tuple(norm(recs[j].get(h)) for h in (heads or [])) == old_sig:
+            continue
+        if j < len(recs) and any(norm(recs[j].get(h)) for h in (heads or [])):
+            frag_ops.append((j, 'upd', [norm(recs[j].get(h)) for h in (heads or [])]))
+        else:
+            frag_ops.append((j, 'del', []))
+    for j, op, vals in sorted(frag_ops, reverse=True):
+        if op == 'upd':
+            wb = _ensure_wb()
+            if sheet in wb.sheetnames:
+                ws = wb[sheet]
+                for col_i, v in enumerate(vals, start=1):
+                    ws.cell(j + 2, col_i).value = v
+                wb.save(FILE)
+            if _google_ok():
+                try:
+                    _google_write_row(sheet, j + 2, vals)
+                except Exception as e:
+                    print(f'[Sheets write-at] {e}')
+            upd += 1
+        elif delete_row_at(sheet, j + 2):
+            del_n += 1
     for r in rows:
         cid = str(r.get('id', ''))
         if cid and cid not in seen_ids and delete_by_id(cid):
+            del_n += 1
+    return f'Правок: {upd}, новых строк: {new_n}, удалено: {del_n}.'
+
+
+def _apply_free_edits(sheet: str, heads: list, rows: list, recs: list) -> str:
+    """Вольный лист (импорт): всё позиционно, без ID и зеркал."""
+    norm = _norm_cell
+    key_of = {h: HEADER_TO_KEY.get(h, h.lower()) for h in (heads or [])}
+    data_recs = [rec for rec in recs if any(norm(rec.get(h)) for h in (heads or []))]
+    n_old, m = len(rows), len(data_recs)
+    upd, new_n, del_n = 0, 0, 0
+    wb = _ensure_wb()
+    if sheet not in wb.sheetnames:
+        return 'Лист пропал локально — обнови из Google.'
+    ws = wb[sheet]
+    for i in range(min(n_old, m)):
+        old = [rows[i].get(key_of[h], '') for h in (heads or [])]
+        new = [norm(data_recs[i].get(h)) for h in (heads or [])]
+        if new == old:
+            continue
+        for col_i, v in enumerate(new, start=1):
+            ws.cell(i + 2, col_i).value = v
+        wb.save(FILE)
+        if _google_ok():
+            try:
+                _google_write_row(sheet, i + 2, new)
+            except Exception as e:
+                print(f'[Sheets write-at] {e}')
+        upd += 1
+    for j in range(n_old, m):
+        vals = [norm(data_recs[j].get(h)) for h in (heads or [])]
+        ws.append(vals)
+        wb.save(FILE)
+        if _google_ok():
+            try:
+                _google_append_row(sheet, vals)
+            except Exception as e:
+                print(f'[Sheets append] {e}')
+        new_n += 1
+    for k in range(n_old, m, -1):
+        if delete_row_at(sheet, k + 1):
             del_n += 1
     return f'Правок: {upd}, новых строк: {new_n}, удалено: {del_n}.'
 
