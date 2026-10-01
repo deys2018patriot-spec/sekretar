@@ -210,21 +210,21 @@ with tab_req:
             st.warning(f'Похож на уже записанного:\n{names}')
             choice = st.radio('Что делать?', ('Обновить его', 'Новая запись'), key='dup_choice')
             mode = 'upsert' if choice == 'Обновить его' else 'new'
-    if proceed:
-        st.info('Проверь разбор выше и нажми «✅ Подтвердить сохранение» — '
-                'только тогда запись попадёт в таблицы (запись в Google идёт ~20–40 сек).')
-        if st.button('✅ Подтвердить сохранение', type='primary'):
-            with st.spinner('Сохраняю (пишу в Google, ~20–40 сек)...'):
-                try:
-                    card = finalize_save(dict(data), mode)
-                except Exception as e:
-                    st.error(f'Не сохранилось: {e}')
-                    st.stop()
-            st.success(card)
-            say(card + f"\nИсходник: {st.session_state.get('pending_raw', '')[:200]}")
-            st.session_state['pending'] = None
-            st.session_state['dups'] = []
-            st.session_state['raw_text'] = ''
+        if proceed:
+            st.info('Проверь разбор выше и нажми «✅ Подтвердить сохранение» — '
+                    'только тогда запись попадёт в таблицы (запись в Google идёт ~20–40 сек).')
+            if st.button('✅ Подтвердить сохранение', type='primary'):
+                with st.spinner('Сохраняю (пишу в Google, ~20–40 сек)...'):
+                    try:
+                        card = finalize_save(dict(data), mode)
+                    except Exception as e:
+                        st.error(f'Не сохранилось: {e}')
+                        st.stop()
+                st.success(card)
+                say(card + f"\nИсходник: {st.session_state.get('pending_raw', '')[:200]}")
+                st.session_state['pending'] = None
+                st.session_state['dups'] = []
+                st.session_state['raw_text'] = ''
 
     # --- ИИ-командная строка ---
     st.divider()
