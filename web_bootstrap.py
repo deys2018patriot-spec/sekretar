@@ -4,8 +4,14 @@
 Ничего в существующих .py не меняет, только читает их публичные функции.
 """
 import os
+import time
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+
+# Кэш копирования: каждый ререндер Streamlit заново выполняет скрипт,
+# без кэша это были бы 4+ медленных запроса к Google на КАЖДЫЙ клик.
+_PULL_CACHE = {'ts': 0.0, 'report': None}
+PULL_TTL = 600  # секунд; кнопка «Обновить из Google» обходит кэш через force=True
 
 
 def _write_if_missing(path: str, content: str) -> bool:
@@ -58,14 +64,29 @@ def load_secrets() -> dict:
     return done
 
 
-def pull_google_to_local() -> dict:
+def pull_google_to_local(force: bool = False) -> dict:
     """Полное копирование ВСЕХ листов Google Sheets в локальный xlsx.
 
-    Google Sheets — источник правды: при каждом старте (и по кнопке
-    «Обновить из Google») вся таблица переписывается из облака.
+    Google Sheets — источник правды: вся таблица переписывается из облака
+    при старте и по кнопке «Обновить из Google» (force=True).
+    Между этим — кэш PULL_TTL, чтобы каждый клик не ждал ~15с API.
     Если Google недоступен, а локальный файл есть — работаем с ним.
     Возвращает {'ok': bool, 'rows': int (всего), 'sheets': {лист: строк}, 'reason': str}.
     """
+    if not force and _PULL_CACHE['report'] is not None \
+            and time.time() - _PULL_CACHE['ts'] < PULL_TTL:
+        rep = dict(_PULL_CACHE['report'])
+        rep['reason'] = rep.get('reason', '') + ' (кэш)'
+        rep['sheets'] = dict(rep.get('sheets') or {})
+        return rep
+    rep = _do_pull_google_to_local()
+    _PULL_CACHE['ts'] = time.time()
+    _PULL_CACHE['report'] = {'ok': rep.get('ok'), 'rows': rep.get('rows'),
+                             'sheets': dict(rep.get('sheets') or {}), 'reason': rep.get('reason')}
+    return rep
+
+
+def _do_pull_google_to_local() -> dict:
     import storage
 
     xlsx = os.path.join(BASE, 'clients.xlsx')

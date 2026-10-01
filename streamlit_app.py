@@ -63,43 +63,61 @@ with tab_req:
     raw_text = st.text_area('Текст заявки', height=150, key='raw_text',
                             placeholder='Например: Позвонила мама Иванова Мария, сын Тимофей Иванов 9 лет, ...')
 
-    # --- голос (скрыть блок если модуля/аудио нет — без падения) ---
-    try:
-        import speech_recognition as sr  # noqa: F401
-        _sr_ok = True
-    except Exception:
-        _sr_ok = False
-
-    if _sr_ok and hasattr(st, 'audio_input'):
+    # --- голос: микрофон в браузере ИЛИ загрузка голосового файла ---
+    def recognize_wav_bytes(raw: bytes) -> str:
+        import speech_recognition as sr
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
+            tmp.write(raw)
+            tmp_path = tmp.name
         try:
-            st.caption('🎤 Голосовой ввод (распознавание ru-RU через Google):')
-            audio = st.audio_input('Надиктуй заявку')
-        except Exception as e:
-            audio = None
-            st.caption(f'🎤 Голосовой ввод недоступен на сервере ({e}). Вставь текст вручную.')
-        if audio is not None:
+            r = sr.Recognizer()
+            with sr.AudioFile(tmp_path) as src:
+                data = r.record(src)
+            return r.recognize_google(data, language='ru-RU')
+        finally:
             try:
-                import speech_recognition as sr
-                import tempfile
-                suffix = '.wav'
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(audio.getvalue())
-                    tmp_path = tmp.name
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+    try:
+        import speech_recognition  # noqa: F401
+        _sr_ok = True
+    except Exception as _e:
+        _sr_ok = False
+        st.caption(f'🎤 Голосовое распознавание недоступно на сервере ({_e}). Вставь текст вручную.')
+
+    if _sr_ok:
+        if hasattr(st, 'audio_input'):
+            try:
+                st.caption('🎤 Надиктуй в микрофон (ru-RU):')
+                audio = st.audio_input('Надиктуй заявку')
+            except Exception as e:
+                audio = None
+                st.caption(f'🎤 Микрофон недоступен ({e}) — загрузи аудиофайл ниже.')
+            if audio is not None:
+                aid = getattr(audio, 'id', None) or audio.name
+                if st.session_state.get('voice_done') != aid:
+                    with st.spinner('🎧 Распознаю...'):
+                        try:
+                            st.session_state['raw_text'] = recognize_wav_bytes(audio.getvalue())
+                            st.session_state['voice_done'] = aid
+                            st.info('Проверь распознанный текст и жми «Внести».')
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f'Не распознано: {e}. Попробуй ещё раз или загрузи файл.')
+        st.caption('...или загрузи голосовое (wav/mp3/ogg/m4a — например, пересланное из мессенджера):')
+        up = st.file_uploader('Голосовой файл', type=['wav', 'mp3', 'ogg', 'm4a', 'flac'],
+                              key='voice_file', label_visibility='collapsed')
+        if up is not None and st.button('🎧 Распознать файл'):
+            with st.spinner('🎧 Распознаю файл...'):
                 try:
-                    r = sr.Recognizer()
-                    with sr.AudioFile(tmp_path) as src:
-                        data = r.record(src)
-                    text = r.recognize_google(data, language='ru-RU')
-                    st.session_state['raw_text'] = text
+                    st.session_state['raw_text'] = recognize_wav_bytes(up.getvalue())
                     st.info('Проверь распознанный текст и жми «Внести».')
                     st.rerun()
-                finally:
-                    try:
-                        os.remove(tmp_path)
-                    except Exception:
-                        pass
-            except Exception as e:
-                st.error(f'Не распознано: {e}')
+                except Exception as e:
+                    st.error(f'Не распознано: {e}. Нужна разборчивая русская речь.')
 
     # --- разбор и сохранение ---
     st.session_state.setdefault('pending', None)
@@ -192,15 +210,21 @@ with tab_req:
             st.warning(f'Похож на уже записанного:\n{names}')
             choice = st.radio('Что делать?', ('Обновить его', 'Новая запись'), key='dup_choice')
             mode = 'upsert' if choice == 'Обновить его' else 'new'
-        if proceed:
-            if st.button('✅ Подтвердить сохранение', type='primary'):
-                with st.spinner('Сохраняю...'):
+    if proceed:
+        st.info('Проверь разбор выше и нажми «✅ Подтвердить сохранение» — '
+                'только тогда запись попадёт в таблицы (запись в Google идёт ~20–40 сек).')
+        if st.button('✅ Подтвердить сохранение', type='primary'):
+            with st.spinner('Сохраняю (пишу в Google, ~20–40 сек)...'):
+                try:
                     card = finalize_save(dict(data), mode)
-                st.success(card)
-                say(card + f"\nИсходник: {st.session_state.get('pending_raw', '')[:200]}")
-                st.session_state['pending'] = None
-                st.session_state['dups'] = []
-                st.session_state['raw_text'] = ''
+                except Exception as e:
+                    st.error(f'Не сохранилось: {e}')
+                    st.stop()
+            st.success(card)
+            say(card + f"\nИсходник: {st.session_state.get('pending_raw', '')[:200]}")
+            st.session_state['pending'] = None
+            st.session_state['dups'] = []
+            st.session_state['raw_text'] = ''
 
     # --- ИИ-командная строка ---
     st.divider()
@@ -231,7 +255,7 @@ with tab_tbl:
     st.caption('Вся таблица копируется из Google при каждом открытии и по кнопке ниже.')
     if st.button('🔄 Обновить из Google', use_container_width=True):
         with st.spinner('Копирую из Google Sheets...'):
-            rep = web_bootstrap.pull_google_to_local()
+            rep = web_bootstrap.pull_google_to_local(force=True)
         if rep.get('ok'):
             per = rep.get('sheets') or {}
             detail = (', '.join(f'{k}: {v}' for k, v in per.items())) if per else ''
@@ -246,8 +270,64 @@ with tab_tbl:
         st.error(f'Не смог прочитать таблицы: {e}')
     if not all_sheets:
         st.info('Таблицы пока пусты.')
+
+    def _norm_cell(v) -> str:
+        if v is None:
+            return ''
+        if isinstance(v, float) and v != v:  # NaN
+            return ''
+        return str(v)
+
+    def save_table_edits(name: str, heads: list, rows: list, edited) -> str:
+        """Правки из data_editor: изменённые ячейки, новые и удалённые строки."""
+        import storage as _st
+        recs = edited.to_dict('records') if hasattr(edited, 'to_dict') else list(edited)
+        key_of = {h: _st.HEADER_TO_KEY.get(h, h.lower()) for h in (heads or [])}
+        core_keys = [kk for kk, _ in _st.CORE]
+        n_old = len(rows)
+        upd, new_n, del_n = 0, 0, 0
+        seen_ids = set()
+        for i, rec in enumerate(recs):
+            if i < n_old:
+                cid = str(rows[i].get('id', ''))
+                if not cid:
+                    continue
+                seen_ids.add(cid)
+                fields = {}
+                for h in (heads or []):
+                    k = key_of[h]
+                    if k in ('id', 'created'):
+                        continue
+                    nv = _norm_cell(rec.get(h))
+                    if nv != rows[i].get(k, ''):
+                        fields[k] = nv
+                if fields and _st.update_by_id(cid, fields):
+                    upd += 1
+            else:
+                d, extra = {}, {}
+                for h in (heads or []):
+                    v = _norm_cell(rec.get(h))
+                    if not v:
+                        continue
+                    k = key_of[h]
+                    if k in core_keys:
+                        d[k] = v
+                    elif k not in ('id', 'created'):
+                        extra[k] = v
+                if not any(d.values()) and not extra:
+                    continue
+                d.setdefault('status', 'Новая')
+                d['extra'] = extra
+                _st.upsert(d)
+                new_n += 1
+        for r in rows:
+            cid = str(r.get('id', ''))
+            if cid and cid not in seen_ids and _st.delete_by_id(cid):
+                del_n += 1
+        return f'Правок: {upd}, новых строк: {new_n}, удалено: {del_n}.'
+
     for name, (heads, rows) in all_sheets.items():
-        # каждая таблица сворачивается (Общая открыта по умолчанию)
+        # каждая таблица сворачивается (Общая открыта по умолчанию); правится прямо тут
         with st.expander(f'{name} — {len(rows)} строк', expanded=(name == 'Общая')):
             if not rows:
                 st.caption('Пусто')
@@ -255,4 +335,20 @@ with tab_tbl:
             # порядок колонок как в шапке листа
             import storage as _st
             table = [{h: r.get(_st.HEADER_TO_KEY.get(h, h.lower()), '') for h in (heads or [])} for r in rows]
-            st.dataframe(table, use_container_width=True)
+            if name != 'Общая':
+                st.dataframe(table, use_container_width=True)
+                st.caption('Сезонный лист — проекция. Правки: через «Общую» или команду ИИ.')
+                continue
+            # Общую можно править прямо тут (строки добавляются/удаляются тоже)
+            lock = ([heads[0]] if heads else []) + ([heads[1]] if len(heads) > 1 else [])
+            edited = st.data_editor(table, use_container_width=True, num_rows='dynamic',
+                                    key=f'ed_{name}', hide_index=True, disabled=lock)
+            if st.button('💾 Сохранить правки', key=f'sv_{name}'):
+                with st.spinner('Сохраняю правки (пишу в Google)...'):
+                    try:
+                        rep = save_table_edits(name, heads, rows, edited)
+                    except Exception as e:
+                        st.error(f'Не сохранилось: {e}')
+                        st.stop()
+                st.success('✅ ' + rep)
+                st.rerun()

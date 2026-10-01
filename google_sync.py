@@ -54,7 +54,11 @@ def get_creds():
 
 def _service(api: str, ver: str):
     from googleapiclient.discovery import build
-    return build(api, ver, credentials=get_creds())
+    try:
+        from httplib2 import Http
+        return build(api, ver, credentials=get_creds(), http=Http(timeout=25))
+    except Exception:
+        return build(api, ver, credentials=get_creds())
 
 
 def create_calendar_event(title: str, iso_dt: str, desc: str = ''):

@@ -183,7 +183,8 @@ def upsert(data: dict) -> tuple[str, str, list[str]]:
     try:
         import google_sync
         if google_sync.get_sheet_id() and os.path.exists(google_sync.TOKEN):
-            google_sync.ensure_sheet_structure(google_sync.get_sheet_id(), heads)
+            _sheets = ['Общая'] + ([shift] if shift in SHEETS[1:] else [])
+            google_sync.ensure_sheet_structure(google_sync.get_sheet_id(), heads, _sheets)
             for r in ws.iter_rows(min_row=2, values_only=True):
                 if str(r[0]) == cid:
                     vals = [str(x or '') for x in r] + [''] * (len(heads) - len(r))
@@ -220,7 +221,8 @@ def _sync_row_to_google(wb, heads, cid: str, shift: str = ''):
     try:
         import google_sync
         if google_sync.get_sheet_id() and os.path.exists(google_sync.TOKEN):
-            google_sync.ensure_sheet_structure(google_sync.get_sheet_id(), heads)
+            _sheets = ['Общая'] + ([shift] if shift in SHEETS[1:] else [])
+            google_sync.ensure_sheet_structure(google_sync.get_sheet_id(), heads, _sheets)
             ws = wb['Общая']
             for r in ws.iter_rows(min_row=2, values_only=True):
                 if str(r[0]) == cid:
