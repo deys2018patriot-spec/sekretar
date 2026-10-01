@@ -369,6 +369,7 @@ with tab_tbl:
                 st.caption('Сезонный лист — проекция. Правки: через «Общую» или команду ИИ.')
                 continue
             # Общую можно править прямо тут (строки добавляются/удаляются тоже)
+            st.caption('Двойной клик по ячейке — править, Enter — готово. Потом «Сохранить правки».')
             lock = ([heads[0]] if heads else []) + ([heads[1]] if len(heads) > 1 else [])
             edited = st.data_editor(table, use_container_width=True, num_rows='dynamic',
                                     key=f'ed_{name}', hide_index=True, disabled=lock)
