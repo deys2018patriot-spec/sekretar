@@ -21,26 +21,48 @@ st.set_page_config(page_title='Секретарь лагеря', page_icon='📋
 st.markdown('''<style>
 /* Убрать стандартную серую дымку спиннера */
 [data-testid="stSpinner"] { visibility: hidden !important; height: 0 !important; }
-/* Мягкое диффузное свечение по краям экрана, пока сайт думает
-   (как вызов Gemini: синий→фиолет→розовый, дышит, плавно гаснет).
-   Постоянный div: появление/уход через opacity-transition. */
+/* Мягкое многоцветное свечение по краям экрана, пока сайт думает
+   (как вызов Gemini: синий→фиолет→розовый→оранжевый→голубой, дышит,
+   плавно гаснет). Постоянный div: появление/уход через opacity-transition. */
 .think-glow-frame {
   position: fixed; inset: 0; pointer-events: none; z-index: 9999999;
   opacity: 0; transition: opacity .8s ease;
   background:
-    radial-gradient(130px 320px at 0% 18%, rgba(66,133,244,.60), transparent 70%),
-    radial-gradient(130px 320px at 100% 28%, rgba(155,114,203,.55), transparent 70%),
-    radial-gradient(220px 200px at 0% 86%, rgba(66,133,244,.50), transparent 70%),
-    radial-gradient(220px 240px at 100% 82%, rgba(217,101,112,.50), transparent 70%),
-    radial-gradient(340px 130px at 50% 0%, rgba(155,114,203,.40), transparent 70%),
-    radial-gradient(340px 150px at 50% 100%, rgba(66,133,244,.45), transparent 70%);
-  filter: blur(18px) saturate(1.4);
-  animation: glow-breathe 3.2s ease-in-out infinite alternate;
+    radial-gradient(140px 320px at 0% 15%, rgba(66,133,244,.42), transparent 70%),
+    radial-gradient(140px 320px at 100% 25%, rgba(145,119,199,.40), transparent 70%),
+    radial-gradient(180px 160px at 10% 55%, rgba(219,109,147,.30), transparent 70%),
+    radial-gradient(180px 160px at 90% 60%, rgba(72,180,228,.32), transparent 70%),
+    radial-gradient(220px 200px at 0% 88%, rgba(125,92,204,.36), transparent 70%),
+    radial-gradient(220px 220px at 100% 85%, rgba(240,147,70,.30), transparent 70%),
+    radial-gradient(320px 120px at 50% 0%, rgba(66,133,244,.28), transparent 70%),
+    radial-gradient(340px 140px at 50% 100%, rgba(219,109,147,.30), transparent 70%);
+  filter: blur(20px) saturate(1.35);
+  animation: glow-breathe 3.4s ease-in-out infinite alternate;
+}
+/* На телефоне — то же, но заметно слабее и уже, чтобы не перекрывало пол-экрана */
+@media (max-width: 640px) {
+  .think-glow-frame {
+    background:
+      radial-gradient(70px 180px at 0% 15%, rgba(66,133,244,.30), transparent 70%),
+      radial-gradient(70px 180px at 100% 25%, rgba(145,119,199,.28), transparent 70%),
+      radial-gradient(90px 90px at 8% 55%, rgba(219,109,147,.22), transparent 70%),
+      radial-gradient(90px 90px at 92% 60%, rgba(72,180,228,.22), transparent 70%),
+      radial-gradient(110px 110px at 0% 88%, rgba(125,92,204,.26), transparent 70%),
+      radial-gradient(110px 120px at 100% 85%, rgba(240,147,70,.22), transparent 70%),
+      radial-gradient(180px 70px at 50% 0%, rgba(66,133,244,.20), transparent 70%),
+      radial-gradient(190px 80px at 50% 100%, rgba(219,109,147,.22), transparent 70%);
+    filter: blur(12px) saturate(1.2);
+    animation: glow-breathe-mobile 3.4s ease-in-out infinite alternate;
+  }
+}
+@keyframes glow-breathe-mobile {
+  from { filter: blur(12px) saturate(1.2) brightness(1); }
+  to { filter: blur(18px) saturate(1.4) brightness(1.08); }
 }
 body:has(div[data-testid="stSpinner"]) .think-glow-frame { opacity: 1; }
 @keyframes glow-breathe {
-  from { filter: blur(18px) saturate(1.4) brightness(1); }
-  to { filter: blur(28px) saturate(1.7) brightness(1.15); }
+  from { filter: blur(18px) saturate(1.3) brightness(1); }
+  to { filter: blur(26px) saturate(1.6) brightness(1.12); }
 }
 </style><div class="think-glow-frame"></div>''', unsafe_allow_html=True)
 st.title('📋 Секретарь лагеря')
