@@ -145,6 +145,22 @@ with tab_req:
         flat['id'], flat['created'] = cid, datetime.now().strftime('%d.%m.%Y %H:%M')
         ws.append(st_mod._row_dict_to_list(heads, flat))
         wb.save(st_mod.FILE)
+        # Новая запись тоже обязана улететь в Google (иначе сгорит при редеплое)
+        try:
+            import google_sync
+            if google_sync.get_sheet_id() and os.path.exists(google_sync.TOKEN):
+                shift = str(data.get('shift', ''))
+                _sheets = ['Общая'] + ([shift] if shift in st_mod.SHEETS[1:] else [])
+                with google_sync._API_LOCK:
+                    _svc = google_sync._service('sheets', 'v4')
+                    google_sync.ensure_sheet_structure(
+                        google_sync.get_sheet_id(), heads, _sheets, _svc=_svc)
+                    vals = [str(x or '') for x in st_mod._row_dict_to_list(heads, flat)]
+                    google_sync.push_row(vals, 'Общая', _svc=_svc)
+                    if shift in st_mod.SHEETS[1:]:
+                        google_sync.push_row(vals, shift, _svc=_svc)
+        except Exception as e:
+            print(f'[Sheets] только локально ({e})')
         return cid
 
 
