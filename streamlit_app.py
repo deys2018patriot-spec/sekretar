@@ -21,21 +21,27 @@ st.set_page_config(page_title='Секретарь лагеря', page_icon='📋
 st.markdown('''<style>
 /* Убрать стандартную серую дымку спиннера */
 [data-testid="stSpinner"] { visibility: hidden !important; height: 0 !important; }
-/* Радужный светящийся ободок на всю рамку, пока сайт думает (виден любой спиннер).
-   Плавное появление/уход через opacity-transition постоянного div. */
+/* Мягкое диффузное свечение по краям экрана, пока сайт думает
+   (как вызов Gemini: синий→фиолет→розовый, дышит, плавно гаснет).
+   Постоянный div: появление/уход через opacity-transition. */
 .think-glow-frame {
   position: fixed; inset: 0; pointer-events: none; z-index: 9999999;
-  border-radius: 22px; padding: 5px;
-  background: linear-gradient(60deg,#ff004c,#ff8a00,#ffee00,#00e676,#00b0ff,#a100ff,#ff004c);
-  background-size: 300% 300%;
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor; mask-composite: exclude;
-  opacity: 0; transition: opacity .7s ease;
-  animation: rainbow-flow 3s linear infinite;
-  filter: drop-shadow(0 0 16px rgba(255,0,220,.55)) drop-shadow(0 0 34px rgba(0,180,255,.35));
+  opacity: 0; transition: opacity .8s ease;
+  background:
+    radial-gradient(130px 320px at 0% 18%, rgba(66,133,244,.60), transparent 70%),
+    radial-gradient(130px 320px at 100% 28%, rgba(155,114,203,.55), transparent 70%),
+    radial-gradient(220px 200px at 0% 86%, rgba(66,133,244,.50), transparent 70%),
+    radial-gradient(220px 240px at 100% 82%, rgba(217,101,112,.50), transparent 70%),
+    radial-gradient(340px 130px at 50% 0%, rgba(155,114,203,.40), transparent 70%),
+    radial-gradient(340px 150px at 50% 100%, rgba(66,133,244,.45), transparent 70%);
+  filter: blur(18px) saturate(1.4);
+  animation: glow-breathe 3.2s ease-in-out infinite alternate;
 }
 body:has(div[data-testid="stSpinner"]) .think-glow-frame { opacity: 1; }
-@keyframes rainbow-flow { to { background-position: 300% 0; } }
+@keyframes glow-breathe {
+  from { filter: blur(18px) saturate(1.4) brightness(1); }
+  to { filter: blur(28px) saturate(1.7) brightness(1.15); }
+}
 </style><div class="think-glow-frame"></div>''', unsafe_allow_html=True)
 st.title('📋 Секретарь лагеря')
 
