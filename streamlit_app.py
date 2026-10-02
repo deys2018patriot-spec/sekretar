@@ -27,6 +27,10 @@ st.markdown('''<style>
 .circuit-board {
   position: fixed; inset: 0; pointer-events: none; z-index: 0;
   opacity: .55;
+  /* центр под контентом выцветает: плата живёт по краям и в просветах,
+     целиком не видна никогда */
+  -webkit-mask-image: radial-gradient(ellipse 95% 85% at 50% 38%, transparent 52%, black 100%);
+  mask-image: radial-gradient(ellipse 95% 85% at 50% 38%, transparent 52%, black 100%);
 }
 [data-testid="stAppViewContainer"], [data-testid="stMain"],
 [data-testid="stHeader"], [data-testid="stBottom"] {
