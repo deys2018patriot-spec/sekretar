@@ -21,50 +21,50 @@ st.set_page_config(page_title='Секретарь лагеря', page_icon='📋
 st.markdown('''<style>
 /* Убрать стандартную серую дымку спиннера */
 [data-testid="stSpinner"] { visibility: hidden !important; height: 0 !important; }
-/* Мягкое многоцветное свечение по краям экрана, пока сайт думает
-   (как вызов Gemini: синий→фиолет→розовый→оранжевый→голубой, дышит,
-   плавно гаснет). Постоянный div: появление/уход через opacity-transition. */
-.think-glow-frame {
+/* Фон-микросхема: тонкие дорожки с контактными площадками поверх всего,
+   едва видны в покое. Пока сайт думает (есть спиннер) — по дорожкам
+   бежит ток: светящиеся импульсы + лёгкая подсветка платы. */
+.circuit-board {
   position: fixed; inset: 0; pointer-events: none; z-index: 9999999;
-  opacity: 0; transition: opacity .8s ease;
-  background:
-    radial-gradient(140px 320px at 0% 15%, rgba(66,133,244,.42), transparent 70%),
-    radial-gradient(140px 320px at 100% 25%, rgba(145,119,199,.40), transparent 70%),
-    radial-gradient(180px 160px at 10% 55%, rgba(219,109,147,.30), transparent 70%),
-    radial-gradient(180px 160px at 90% 60%, rgba(72,180,228,.32), transparent 70%),
-    radial-gradient(220px 200px at 0% 88%, rgba(125,92,204,.36), transparent 70%),
-    radial-gradient(220px 220px at 100% 85%, rgba(240,147,70,.30), transparent 70%),
-    radial-gradient(320px 120px at 50% 0%, rgba(66,133,244,.28), transparent 70%),
-    radial-gradient(340px 140px at 50% 100%, rgba(219,109,147,.30), transparent 70%);
-  filter: blur(20px) saturate(1.35);
-  animation: glow-breathe 3.4s ease-in-out infinite alternate;
+  opacity: .5; transition: opacity .6s ease;
 }
-/* На телефоне — то же, но заметно слабее и уже, чтобы не перекрывало пол-экрана */
+.circuit-board .traces { opacity: .55; }
+.circuit-board .current { opacity: 0; transition: opacity .5s ease; }
+body:has(div[data-testid="stSpinner"]) .circuit-board { opacity: .9; }
+body:has(div[data-testid="stSpinner"]) .circuit-board .current { opacity: 1; }
+/* На телефоне — тише, чтобы не рябило */
 @media (max-width: 640px) {
-  .think-glow-frame {
-    background:
-      radial-gradient(70px 180px at 0% 15%, rgba(66,133,244,.30), transparent 70%),
-      radial-gradient(70px 180px at 100% 25%, rgba(145,119,199,.28), transparent 70%),
-      radial-gradient(90px 90px at 8% 55%, rgba(219,109,147,.22), transparent 70%),
-      radial-gradient(90px 90px at 92% 60%, rgba(72,180,228,.22), transparent 70%),
-      radial-gradient(110px 110px at 0% 88%, rgba(125,92,204,.26), transparent 70%),
-      radial-gradient(110px 120px at 100% 85%, rgba(240,147,70,.22), transparent 70%),
-      radial-gradient(180px 70px at 50% 0%, rgba(66,133,244,.20), transparent 70%),
-      radial-gradient(190px 80px at 50% 100%, rgba(219,109,147,.22), transparent 70%);
-    filter: blur(12px) saturate(1.2);
-    animation: glow-breathe-mobile 3.4s ease-in-out infinite alternate;
-  }
+  .circuit-board { opacity: .35; }
+  body:has(div[data-testid="stSpinner"]) .circuit-board { opacity: .6; }
 }
-@keyframes glow-breathe-mobile {
-  from { filter: blur(12px) saturate(1.2) brightness(1); }
-  to { filter: blur(18px) saturate(1.4) brightness(1.08); }
-}
-body:has(div[data-testid="stSpinner"]) .think-glow-frame { opacity: 1; }
-@keyframes glow-breathe {
-  from { filter: blur(18px) saturate(1.3) brightness(1); }
-  to { filter: blur(26px) saturate(1.6) brightness(1.12); }
-}
-</style><div class="think-glow-frame"></div>''', unsafe_allow_html=True)
+</style><div class="circuit-board"><svg width="100%" height="100%" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1200 800">
+<g class="traces" stroke="#8aa4c8" stroke-width="2" fill="none">
+<path d="M-20,120 H320 L380,180 H700 L760,240 H1220"/>
+<path d="M-20,420 H180 L240,480 H560 L620,540 H1220"/>
+<path d="M-20,680 H420 L480,620 H900 L960,560 H1220"/>
+<path d="M200,-20 V200 L260,260 V520 L320,580 V820"/>
+<path d="M600,-20 V140 L660,200 V420 L720,480 V820"/>
+<path d="M980,-20 V300 L1040,360 V620 L1100,680 V820"/>
+<path d="M-20,260 H120 L170,310 H340"/>
+<path d="M860,-20 V100 L910,150 H1220"/>
+</g>
+<g class="traces" fill="#8aa4c8" stroke="none">
+<circle cx="320" cy="120" r="5"/><circle cx="700" cy="180" r="5"/>
+<circle cx="180" cy="420" r="5"/><circle cx="560" cy="480" r="5"/>
+<circle cx="420" cy="680" r="5"/><circle cx="900" cy="620" r="5"/>
+<circle cx="200" cy="200" r="5"/><circle cx="600" cy="140" r="5"/>
+<circle cx="980" cy="300" r="5"/><circle cx="340" cy="310" r="5"/>
+<circle cx="910" cy="150" r="5"/><circle cx="720" cy="480" r="5"/>
+</g>
+<g class="current" fill="#2f7bff">
+<circle r="6"><animateMotion dur="2.8s" repeatCount="indefinite" path="M-20,120 H320 L380,180 H700 L760,240 H1220"/></circle>
+<circle r="6" fill="#22b8d4"><animateMotion dur="3.6s" repeatCount="indefinite" path="M-20,420 H180 L240,480 H560 L620,540 H1220"/></circle>
+<circle r="6"><animateMotion dur="3.1s" repeatCount="indefinite" path="M-20,680 H420 L480,620 H900 L960,560 H1220"/></circle>
+<circle r="5" fill="#22b8d4"><animateMotion dur="2.4s" repeatCount="indefinite" path="M200,-20 V200 L260,260 V520 L320,580 V820"/></circle>
+<circle r="5"><animateMotion dur="3.9s" repeatCount="indefinite" path="M600,-20 V140 L660,200 V420 L720,480 V820"/></circle>
+<circle r="5" fill="#22b8d4"><animateMotion dur="2.9s" repeatCount="indefinite" path="M980,-20 V300 L1040,360 V620 L1100,680 V820"/></circle>
+</g>
+</svg></div>''', unsafe_allow_html=True)
 st.title('📋 Секретарь лагеря')
 
 
