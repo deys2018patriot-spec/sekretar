@@ -1,5 +1,6 @@
 """Хранилище v2: динамические колонки (ИИ может создавать новые) + локальный Excel + Google Sheets."""
 import os
+import re
 from datetime import datetime
 from openpyxl import Workbook, load_workbook
 
@@ -129,6 +130,11 @@ def write_sheet_local(sheet: str, header: list, rows: list) -> int:
             if len(wb.sheetnames) > 1:
                 del wb[sn]
     wb.save(FILE)
+    try:
+        import yandex_store
+        yandex_store.sync_after_change('импорт ' + sheet)
+    except Exception as e:
+        print(f'[Yandex] только локально ({e})')
     return len(rows)
 
 
@@ -140,11 +146,155 @@ def _row_dict_to_list(heads: list, d: dict) -> list:
     return out
 
 
+GENERATED = ['Долги', 'Отчёт']
+
+
+def validate_row(data: dict) -> dict:
+    """Чинит поля записи: телефон, возраст, смена, статус, дата.
+
+    Невалидное не удаляет — правит к канону, а факт правки кладёт
+    в extra 'нужна_проверка'. Никогда не роняет.
+    """
+    try:
+        from brain import extract_phone, normalize_shift
+        d = dict(data)
+        fixed = []
+        ph = extract_phone(str(d.get('phone', '')))
+        if ph != str(d.get('phone', '')):
+            d['phone'] = ph
+            if ph:
+                fixed.append('телефон')
+        age = re.sub(r'\D', '', str(d.get('age', '')))[:2]
+        if age and not (6 <= int(age) <= 17):
+            age = ''
+            fixed.append('возраст')
+        d['age'] = age
+        sh = normalize_shift(str(d.get('shift', '')))
+        if sh != str(d.get('shift', '')) and str(d.get('shift', '')):
+            fixed.append('смена')
+            d['shift'] = sh
+        st = str(d.get('status', '') or 'Новая').strip().capitalize()
+        canon = {'Новая': 'Новая', 'Перезвонить': 'Перезвонить',
+                 'Перезвонил': 'Перезвонил', 'Думает': 'Думает',
+                 'Оплачено': 'Оплачено', 'Отказ': 'Отказ',
+                 'Приехал': 'Приехал', 'Оплачен': 'Оплачено',
+                 'Оплачена': 'Оплачено', 'Оплатить': 'Оплачено'}
+        if st not in ('Новая', 'Перезвонить', 'Перезвонил', 'Думает',
+                      'Оплачено', 'Отказ', 'Приехал'):
+            st = canon.get(st, 'Новая')
+            fixed.append('статус')
+        d['status'] = st
+        cb = str(d.get('callback_dt', '') or '').strip()
+        if cb:
+            try:
+                datetime.fromisoformat(cb)
+            except Exception:
+                d['callback_dt'] = ''
+                fixed.append('дата')
+        if fixed:
+            ex = dict(d.get('extra', {}) or {})
+            ex.setdefault('нужна_проверка', ', '.join(fixed))
+            d['extra'] = ex
+        return d
+    except Exception as e:
+        print(f'[validate] {e}')
+        return data
+
+
+def bulk_update(query: str, fields: dict) -> tuple[int, int]:
+    """Групповое обновление: всем найденным — поля. Возвращает (всего, ок).
+
+    Одна заливка на Диск в конце + автоснапшот до старта.
+    """
+    import re
+    rows = find_ids(query)
+    if not rows:
+        return 0, 0
+    try:
+        import yandex_store
+        yandex_store.snapshot('bulk: ' + query[:40])
+        yandex_store.defer(True)
+    except Exception:
+        pass
+    ok = 0
+    try:
+        fields = dict(fields or {})
+        fields['обновлено'] = datetime.now().strftime('%d.%m.%Y %H:%M')
+        for r in rows:
+            try:
+                if update_by_id(r['id'], fields):
+                    ok += 1
+            except Exception:
+                pass
+    finally:
+        try:
+            import yandex_store
+            yandex_store.defer(False)
+        except Exception:
+            pass
+    return len(rows), ok
+
+
+def export_csv(sheet: str) -> tuple[str, bytes]:
+    """Лист → CSV-байты (UTF-8 с BOM для Excel). Возвращает (имя, байты)."""
+    import csv
+    import io
+    heads, rows = read_sheet(sheet)
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=';')
+    w.writerow(heads)
+    for r in rows:
+        w.writerow([r.get(HEADER_TO_KEY.get(h, h.lower()), '') for h in heads])
+    data = '\ufeff' + buf.getvalue()
+    return f'{sheet}.csv', data.encode('utf-8')
+
+
+def _sum_val(v) -> float:
+    try:
+        return float(re.sub(r'[^\d.]', '', str(v).replace(',', '.')) or 0)
+    except Exception:
+        return 0.0
+
+
+def build_reports() -> dict:
+    """Пересчитывает generated-листы Долги и Отчёт из Общей. Возвращает сводку."""
+    rows = read_all()
+    unpaid = [r for r in rows if str(r.get('status', '')) in
+              ('Новая', 'Перезвонить', 'Думает')]
+    d_heads = ['ФИО ребенка', 'Телефон', 'Смена', 'Статус', 'Сумма', 'Дата перезвона']
+    d_rows = [[r.get('fio_child', ''), r.get('phone', ''), r.get('shift', ''),
+               r.get('status', ''), r.get('сумма', ''), r.get('callback_dt', '')]
+              for r in unpaid]
+    write_sheet_local('Долги', d_heads, d_rows)
+    by_shift: dict = {}
+    for r in rows:
+        sh = str(r.get('shift', '') or '—')
+        s = by_shift.setdefault(sh, {'всего': 0, 'оплачено': 0, 'долг': 0.0,
+                                    'собрано': 0.0})
+        s['всего'] += 1
+        if str(r.get('status', '')) == 'Оплачено':
+            s['оплачено'] += 1
+            s['собрано'] += _sum_val(r.get('сумма', ''))
+        elif str(r.get('status', '')) in ('Новая', 'Перезвонить', 'Думает'):
+            s['долг'] += _sum_val(r.get('сумма', ''))
+    o_heads = ['Смена', 'Всего', 'Оплачено', 'Должников', 'Собрано', 'Долг']
+    o_rows = []
+    for sh, s in by_shift.items():
+        debtors = s['всего'] - s['оплачено']
+        o_rows.append([sh, s['всего'], s['оплачено'], debtors,
+                       int(s['собрано']), int(s['долг'])])
+    write_sheet_local('Отчёт', o_heads, o_rows)
+    return {'должников': len(d_rows), 'смен': len(o_rows)}
+
+
 def upsert(data: dict) -> tuple[str, str, list[str]]:
     """Возвращает (действие, id, новые_колонки)."""
     from brain import fio_match
     import re
+    data = validate_row(data)
     extra = data.get('extra', {}) or {}
+    extra['обновлено'] = datetime.now().strftime('%d.%m.%Y %H:%M')
+    data['extra'] = extra
     new_cols = [k for k in extra if k not in CORE_KEYS]
 
     wb = _ensure_wb()
@@ -215,33 +365,14 @@ def upsert(data: dict) -> tuple[str, str, list[str]]:
                 break
     wb.save(FILE)
 
-    # Google Sheets (не роняем локалку; один клиент на всю операцию — память 512МБ)
+    # Яндекс.Диск — источник правды: заливаем ВЕСЬ файл (дешево, ~9КБ).
+    # Перед заливкой текущий remote уходит в бэкап (см. yandex_store).
     try:
-        import google_sync
-        if google_sync.get_sheet_id() and os.path.exists(google_sync.TOKEN):
-            _sheets = ['Общая'] + ([shift] if shift in SHEETS[1:] else [])
-            with google_sync._API_LOCK:
-                _svc = google_sync._service('sheets', 'v4')
-                google_sync.ensure_sheet_structure(google_sync.get_sheet_id(), heads, _sheets, _svc=_svc)
-                for r in ws.iter_rows(min_row=2, values_only=True):
-                    if str(r[0]) == cid:
-                        vals = [str(x or '') for x in r] + [''] * (len(heads) - len(r))
-                        google_sync.push_row(vals[:len(heads)], 'Общая', _svc=_svc)
-                        if shift in SHEETS[1:]:
-                            google_sync.push_row(vals[:len(heads)], shift, _svc=_svc)
-                        break
-    except Exception as e:
-        print(f'[Sheets] только локально ({e})')
-    created = [k for k in new_cols if k not in [h.lower() for h in _headers(wb["Общая"])[:-len(new_cols)]]] if new_cols else []
-    # Яндекс Диск: зеркало файла (не роняем локалку)
-    try:
-        import yandex_sync
-        if yandex_sync.get_token():
-            r = yandex_sync.sync_excel()
-            if not r['ok']:
-                print(f"[Yandex] {r['err']}")
+        import yandex_store
+        yandex_store.sync_after_change('upsert')
     except Exception as e:
         print(f'[Yandex] только локально ({e})')
+    created = [k for k in new_cols if k not in [h.lower() for h in _headers(wb["Общая"])[:-len(new_cols)]]] if new_cols else []
     # звонок состоялся — снимаем напоминания человека
     removed = {'local': 0, 'calendar': 0}
     if str(flat.get('status', '')) == 'Перезвонил':
@@ -256,23 +387,12 @@ def upsert(data: dict) -> tuple[str, str, list[str]]:
 # ===== Агент: полный доступ ИИ к таблицам =====
 
 def _sync_row_to_google(wb, heads, cid: str, shift: str = ''):
+    """Оставлено для совместимости: теперь заливает весь файл на Диск."""
     try:
-        import google_sync
-        if google_sync.get_sheet_id() and os.path.exists(google_sync.TOKEN):
-            _sheets = ['Общая'] + ([shift] if shift in SHEETS[1:] else [])
-            with google_sync._API_LOCK:
-                _svc = google_sync._service('sheets', 'v4')
-                google_sync.ensure_sheet_structure(google_sync.get_sheet_id(), heads, _sheets, _svc=_svc)
-                ws = wb['Общая']
-                for r in ws.iter_rows(min_row=2, values_only=True):
-                    if str(r[0]) == cid:
-                        vals = [str(x or '') for x in r] + [''] * (len(heads) - len(r))
-                        google_sync.push_row(vals[:len(heads)], 'Общая', _svc=_svc)
-                        if shift in SHEETS[1:]:
-                            google_sync.push_row(vals[:len(heads)], shift, _svc=_svc)
-                        break
+        import yandex_store
+        yandex_store.sync_after_change('update')
     except Exception as e:
-        print(f'[Sheets] {e}')
+        print(f'[Yandex] {e}')
 
 
 def find_ids(query: str) -> list[dict]:
@@ -302,6 +422,8 @@ def find_ids(query: str) -> list[dict]:
 
 def update_by_id(cid: str, fields: dict) -> bool:
     wb = _ensure_wb()
+    fields = dict(fields or {})
+    fields['обновлено'] = datetime.now().strftime('%d.%m.%Y %H:%M')
     extra_keys = [k for k in fields if k not in CORE_KEYS]
     heads = _ensure_columns(wb, extra_keys)
     ws = wb['Общая']
@@ -356,28 +478,15 @@ def delete_by_id(cid: str) -> bool:
     if found:
         wb.save(FILE)
         try:
-            import google_sync
-            if google_sync.get_sheet_id() and os.path.exists(google_sync.TOKEN):
-                with google_sync._API_LOCK:
-                    svc = google_sync._service('sheets', 'v4')
-                    sid = google_sync.get_sheet_id()
-                    for s in google_sync.list_sheets(sid, _svc=svc):
-                        cur = svc.spreadsheets().values().get(spreadsheetId=sid, range=f'{s}!A:A').execute().get('values', [])
-                        for i, r in enumerate(cur, start=1):
-                            if r and str(r[0]) == str(cid) and i > 1:
-                                svc.spreadsheets().batchUpdate(spreadsheetId=sid, body={
-                                    'requests': [{'deleteDimension': {
-                                        'range': {'sheetId': _sheet_gid(svc, sid, s),
-                                                  'dimension': 'ROWS', 'startIndex': i - 1, 'endIndex': i}}}]})\
-                                    .execute()
-                                break
+            import yandex_store
+            yandex_store.sync_after_change('delete')
         except Exception as e:
-            print(f'[Sheets delete] {e}')
+            print(f'[Yandex delete] {e}')
     return found
 
 
 def delete_row_at(sheet: str, row1: int) -> bool:
-    """Удаляет строку по номеру (1-based, шапка = 1) локально и в Google.
+    """Удаляет строку по номеру (1-based, шапка = 1) локально + заливка на Диск.
 
     Для строк-фрагментов без ID (ручное удаление через сайт).
     """
@@ -390,19 +499,10 @@ def delete_row_at(sheet: str, row1: int) -> bool:
     ws.delete_rows(row1)
     wb.save(FILE)
     try:
-        import google_sync
-        if google_sync.get_sheet_id() and os.path.exists(google_sync.TOKEN):
-            with google_sync._API_LOCK:
-                svc = google_sync._service('sheets', 'v4')
-                sid = google_sync.get_sheet_id()
-                svc.spreadsheets().batchUpdate(spreadsheetId=sid, body={
-                    'requests': [{'deleteDimension': {
-                        'range': {'sheetId': _sheet_gid(svc, sid, sheet),
-                                  'dimension': 'ROWS',
-                                  'startIndex': row1 - 1, 'endIndex': row1}}}]})\
-                    .execute()
+        import yandex_store
+        yandex_store.sync_after_change('delete-at')
     except Exception as e:
-        print(f'[Sheets delete-at] {e}')
+        print(f'[Yandex delete-at] {e}')
     return True
 
 
@@ -445,34 +545,18 @@ def _norm_cell(v) -> str:
 
 
 def _google_write_row(sheet: str, row1: int, vals: list) -> None:
-    """Перезаписывает строку листа (1-based, шапка = 1) в Google."""
-    import google_sync
-    with google_sync._API_LOCK:
-        svc = google_sync._service('sheets', 'v4')
-        sid = google_sync.get_sheet_id()
-        svc.spreadsheets().values().update(
-            spreadsheetId=sid, range=f'{sheet}!{row1}:{row1}',
-            valueInputOption='USER_ENTERED',
-            body={'values': [[str(x or '') for x in vals]]}).execute()
+    """Оставлено для совместимости: построчные записи не нужны —
+    весь файл заливается на Диск разом (см. конец apply_*)."""
+    return None
 
 
 def _google_append_row(sheet: str, vals: list) -> None:
-    import google_sync
-    with google_sync._API_LOCK:
-        svc = google_sync._service('sheets', 'v4')
-        sid = google_sync.get_sheet_id()
-        svc.spreadsheets().values().append(
-            spreadsheetId=sid, range=f'{sheet}!A:ZZ',
-            valueInputOption='USER_ENTERED',
-            body={'values': [[str(x or '') for x in vals]]}).execute()
+    """Оставлено для совместимости: см. _google_write_row."""
+    return None
 
 
 def _google_ok() -> bool:
-    try:
-        import google_sync
-        return bool(google_sync.get_sheet_id() and os.path.exists(google_sync.TOKEN))
-    except Exception:
-        return False
+    return False
 
 
 def apply_table_edits(sheet: str, heads: list, rows: list, recs: list) -> str:
@@ -483,10 +567,27 @@ def apply_table_edits(sheet: str, heads: list, rows: list, recs: list) -> str:
     позиционно (правка/удаление) в любом листе.
     recs — записи вида {заголовок: значение} (уже без DataFrame).
     Возвращает сводку 'Правок: N, новых строк: M, удалено: K.'
+    Generated-листы (Долги/Отчёт) только читаются — их пересчитывает кнопка.
     """
-    if sheet in SHEETS:
-        return _apply_core_edits(sheet, heads, rows, recs)
-    return _apply_free_edits(sheet, heads, rows, recs)
+    if sheet in GENERATED:
+        return 'лист generated — жми «📊 Пересчитать отчёты».'
+    try:
+        import yandex_store
+        yandex_store.defer(True)
+    except Exception:
+        pass
+    try:
+        if sheet in SHEETS:
+            rep = _apply_core_edits(sheet, heads, rows, recs)
+        else:
+            rep = _apply_free_edits(sheet, heads, rows, recs)
+    finally:
+        try:
+            import yandex_store
+            yandex_store.defer(False)
+        except Exception:
+            pass
+    return rep
 
 
 def _apply_core_edits(sheet: str, heads: list, rows: list, recs: list) -> str:
@@ -623,9 +724,8 @@ def add_column(name: str) -> list:
     heads = _ensure_columns(wb, [name.strip().lower()[:30]])
     wb.save(FILE)
     try:
-        import google_sync
-        if google_sync.get_sheet_id() and os.path.exists(google_sync.TOKEN):
-            google_sync.ensure_sheet_structure(google_sync.get_sheet_id(), heads)
+        import yandex_store
+        yandex_store.sync_after_change('колонка')
     except Exception as e:
-        print(f'[Sheets] {e}')
+        print(f'[Yandex] {e}')
     return heads

@@ -105,11 +105,9 @@ st.title('📋 Секретарь лагеря')
 
 def gstatus():
     try:
-        import google_sync
-        s = google_sync.status()
-        ok = bool(s['token'] and s['sheet_id'])
-        link = f"https://docs.google.com/spreadsheets/d/{s['sheet_id']}/edit" if s['sheet_id'] else ''
-        return ok, link
+        import yandex_store
+        s = yandex_store.status()
+        return bool(s['token']), 'https://disk.yandex.ru'
     except Exception:
         return False, ''
 
@@ -121,11 +119,11 @@ def say(s: str):
 # --- статус Google (как в app.py: таблица + календарь) ---
 ok, link = gstatus()
 if ok:
-    st.success('🟢 Google подключен: Таблица + Календарь')
+    st.success('🟢 Яндекс.Диск подключён: таблицы + архив')
     if link:
-        st.markdown(f'[Открыть Google-таблицу]({link})')
+        st.markdown(f'[Открыть Яндекс.Диск]({link})')
 else:
-    st.error('🔴 Google не подключен (работаю локально)')
+    st.error('🔴 Яндекс.Диск не подключён (работаю локально)')
 restore = BOOT.get('restore', {})
 if restore.get('ok') and restore.get('rows', -1) >= 0:
     per = restore.get('sheets') or {}
@@ -238,22 +236,12 @@ with tab_req:
         flat['id'], flat['created'] = cid, datetime.now().strftime('%d.%m.%Y %H:%M')
         ws.append(st_mod._row_dict_to_list(heads, flat))
         wb.save(st_mod.FILE)
-        # Новая запись тоже обязана улететь в Google (иначе сгорит при редеплое)
+        # Новая запись тоже обязана улететь на Диск (иначе сгорит при редеплое)
         try:
-            import google_sync
-            if google_sync.get_sheet_id() and os.path.exists(google_sync.TOKEN):
-                shift = str(data.get('shift', ''))
-                _sheets = ['Общая'] + ([shift] if shift in st_mod.SHEETS[1:] else [])
-                with google_sync._API_LOCK:
-                    _svc = google_sync._service('sheets', 'v4')
-                    google_sync.ensure_sheet_structure(
-                        google_sync.get_sheet_id(), heads, _sheets, _svc=_svc)
-                    vals = [str(x or '') for x in st_mod._row_dict_to_list(heads, flat)]
-                    google_sync.push_row(vals, 'Общая', _svc=_svc)
-                    if shift in st_mod.SHEETS[1:]:
-                        google_sync.push_row(vals, shift, _svc=_svc)
+            import yandex_store
+            yandex_store.sync_after_change('новая запись')
         except Exception as e:
-            print(f'[Sheets] только локально ({e})')
+            print(f'[Yandex] только локально ({e})')
         return cid
 
 
@@ -265,17 +253,26 @@ with tab_req:
             res = upsert(data)
             action, cid, new_cols = res[0], res[1], res[2]
             removed = res[3] if len(res) > 3 else None
-            if removed and (removed.get('local') or removed.get('calendar')):
-                action += f" (напоминания сняты: {removed['local'] + removed['calendar']})"
+            if removed and removed.get('local'):
+                action += f" (напоминания сняты: {removed['local']})"
         extra_txt = ''
         if data.get('callback_dt'):
             try:
                 add_local_reminder(data.get('fio_child', ''), data['callback_dt'], data.get('phone', ''))
-                extra_txt += f"\n📅 Напоминание: {data['callback_dt']} (улетело в Google Calendar)"
+                extra_txt += f"\n📅 Напоминание: {data['callback_dt']} (на сайте, в блоке «Пора перезвонить»)"
             except Exception as e:
                 extra_txt += f'\n⚠️ Напоминание только локально не записалось: {e}'
         if new_cols:
             extra_txt += f"\n🆕 Новые колонки от ИИ: {', '.join(new_cols)}"
+        try:
+            import yandex_store as _ys3
+            _ls = _ys3.last_status()
+            if _ls.get('ok'):
+                extra_txt += '\n☁️ Синхронизировано с Диском'
+            elif _ls.get('ok') is False:
+                extra_txt += f"\n⚠️ Только локально ({_ls.get('reason', '')[:80]})"
+        except Exception:
+            pass
         card = (f"✅ {data.get('fio_child') or '?'} — {action}\n"
                 f"Родитель: {data.get('parent_fio') or '—'} | Тел: {data.get('phone') or '—'}\n"
                 f"Смена: {data.get('shift') or '—'} | Статус: {data.get('status')}"
@@ -328,9 +325,9 @@ with tab_req:
             mode = 'upsert' if choice == 'Обновить его' else 'new'
         if proceed:
             st.info('Проверь разбор выше и нажми «✅ Подтвердить сохранение» — '
-                    'только тогда запись попадёт в таблицы (запись в Google идёт ~20–40 сек).')
+                    'только тогда запись попадёт в таблицы (запись на Диск идёт ~10–20 сек).')
             if st.button('✅ Подтвердить сохранение', type='primary'):
-                with st.spinner('Сохраняю (пишу в Google, ~20–40 сек)...'):
+                with st.spinner('Сохраняю (пишу на Диск, ~10–20 сек)...'):
                     try:
                         card = finalize_save(dict(data), mode)
                     except Exception as e:
@@ -369,14 +366,14 @@ with tab_req:
         st.text(entry + '\n---')
 
 with tab_tbl:
-    # --- Таблицы: полная копия Google Sheets (все листы) ---
+    # --- Таблицы: копия мастер-файла с Яндекс.Диска (все листы) ---
     _le = st.session_state.pop('_last_edit', None)
     if _le:
         st.success(_le)
-    st.subheader('📊 Таблицы — копия Google Sheets')
-    st.caption('Вся таблица копируется из Google при каждом открытии и по кнопке ниже.')
-    if st.button('🔄 Обновить из Google', use_container_width=True):
-        with st.spinner('Копирую из Google Sheets...'):
+    st.subheader('📊 Таблицы — копия Яндекс.Диска')
+    st.caption('Вся таблица копируется с Диска при каждом открытии и по кнопке ниже.')
+    if st.button('🔄 Обновить с Диска', use_container_width=True):
+        with st.spinner('Копирую с Яндекс.Диска...'):
             rep = web_bootstrap.pull_google_to_local(force=True)
         if rep.get('ok'):
             per = rep.get('sheets') or {}
@@ -385,6 +382,56 @@ with tab_tbl:
         else:
             st.error(f"⚠️ {rep.get('reason')} — показываю локальную копию.")
         st.rerun()
+    with st.expander('📥 Переехать с Google Sheets (разово)', expanded=False):
+        st.caption('Соберёт все листы из Google-таблицы в один файл и зальёт мастер на Яндекс.Диск. Кнопка нужна один раз.')
+        if st.button('📥 Переехать с Google', use_container_width=True):
+            with st.spinner('Переезжаю с Google на Диск...'):
+                try:
+                    import yandex_store
+                    rep = yandex_store.migrate_from_google()
+                except Exception as e:
+                    rep = {'ok': False, 'reason': f'не переехалось: {e}'}
+            if rep.get('ok'):
+                st.session_state['_last_edit'] = '✅ ' + rep.get('reason', '')
+            else:
+                st.error(f"⚠️ {rep.get('reason')}")
+            st.rerun()
+    c_rep, c_rbk = st.columns(2)
+    with c_rep:
+        if st.button('📊 Пересчитать отчёты', use_container_width=True):
+            with st.spinner('Считаю Долги и Отчёт...'):
+                try:
+                    import storage as _st3
+                    rep = _st3.build_reports()
+                    st.session_state['_last_edit'] = (
+                        f"✅ Отчёты пересчитаны: должников {rep['должников']}, смен {rep['смен']}.")
+                except Exception as e:
+                    st.error(f'Не посчиталось: {e}')
+            st.rerun()
+    with c_rbk:
+        if st.button('📸 Снапшот', use_container_width=True):
+            try:
+                import yandex_store as _ys4
+                rep = _ys4.snapshot('ручной')
+                st.session_state['_last_edit'] = '✅ Снапшот: ' + rep.get('reason', '')
+            except Exception as e:
+                st.error(f'Не сохранилось: {e}')
+            st.rerun()
+    with st.expander('⏪ Откат к бэкапу', expanded=False):
+        try:
+            import yandex_store as _ys5
+            backs = _ys5.list_backups()
+        except Exception:
+            backs = []
+        if not backs:
+            st.caption('Бэкапов на Диске пока нет.')
+        else:
+            _sel = st.selectbox('Бэкап', backs, key='rb_sel')
+            if st.button('⏪ Восстановить выбранный', use_container_width=True):
+                with st.spinner('Восстанавливаю...'):
+                    rep = _ys5.restore_backup(_sel)
+                st.session_state['_last_edit'] = ('✅ ' if rep.get('ok') else '⚠️ ') + rep.get('reason', '')
+                st.rerun()
     try:
         all_sheets = read_all_sheets()
     except Exception as e:
@@ -486,8 +533,8 @@ with tab_tbl:
         raise ValueError(f'формат .{ext or "?"} не поддерживаю (xlsx, xls, ods, csv, json)')
 
     with st.expander('📎 Прикрепить файл таблицы (xlsx, xls, ods, csv, json)', expanded=False):
-        st.caption('Файл станет листом здесь и в Google Sheets — там хранится навсегда. '
-                   'Оригинал уйдёт на Яндекс.Диск, если задан YANDEX_DISK_TOKEN.')
+        st.caption('Файл станет листом здесь и в мастере на Яндекс.Диске — там хранится навсегда. '
+                   'Оригинал тоже уйдёт на Яндекс.Диск.')
         upf = st.file_uploader('Файл таблицы', type=['xlsx', 'xlsm', 'xls', 'ods', 'csv', 'tsv', 'txt', 'json'],
                                key='table_file', label_visibility='collapsed')
         if upf is not None and st.button('📥 Импортировать как лист'):
@@ -501,16 +548,7 @@ with tab_tbl:
                     base = ''.join(c if (c.isalnum() or c in ' _-') else '_' for c in base).strip()[:30] or 'Лист'
                     import storage as _st2
                     _st2.write_sheet_local(base, header, rows_f)
-                    pushed = ''
-                    try:
-                        import google_sync as _gs
-                        if _gs.get_sheet_id():
-                            with _gs._API_LOCK:
-                                _svc2 = _gs._service('sheets', 'v4')
-                                _gs.push_table(base, header, rows_f, _svc=_svc2)
-                            pushed = ' + Google Sheets (навсегда)'
-                    except Exception as e:
-                        pushed = f' (в Google не улетело: {e})'
+                    pushed = ' + мастер на Яндекс.Диске (навсегда)'
                     arch = ''
                     tok = os.environ.get('YANDEX_DISK_TOKEN', '').strip()
                     if tok:
@@ -525,7 +563,7 @@ with tab_tbl:
                                      f'disk:/Лагерь/Файлы/{upf.name}', overwrite=True)
                             arch = ' + оригинал на Яндекс.Диске'
                         except Exception as e:
-                            arch = f' (Яндекс: {str(e)[:120]})'
+                            arch = f' (Яндекс-архив: {str(e)[:120]})'
                     st.session_state['_last_edit'] = (
                         f'✅ Лист «{base}»: {len(rows_f)} строк{pushed}{arch}.')
                     st.rerun()
@@ -543,11 +581,18 @@ with tab_tbl:
             table = [{h: r.get(_st.HEADER_TO_KEY.get(h, h.lower()), '') for h in (heads or [])} for r in rows]
             st.caption('Двойной клик по ячейке — править, Enter — готово. Потом «Сохранить правки».'
                        + ('' if name == 'Общая' else ' Правки сезона уходят и в «Общую»; удалённое здесь удаляется везде.'))
+            try:
+                _csv_name, _csv_bytes = _st.export_csv(name)
+                st.download_button('⬇ Скачать CSV', data=_csv_bytes,
+                                   file_name=_csv_name, mime='text/csv',
+                                   key=f'csv_{name}')
+            except Exception as e:
+                st.caption(f'CSV не собрался: {e}')
             lock = ([heads[0]] if heads else []) + ([heads[1]] if len(heads) > 1 else [])
             edited = st.data_editor(table, use_container_width=True, num_rows='dynamic',
                                     key=f'ed_{name}', hide_index=True, disabled=lock)
             if st.button('💾 Сохранить правки', key=f'sv_{name}'):
-                with st.spinner('Сохраняю правки (пишу в Google)...'):
+                with st.spinner('Сохраняю правки (пишу на Диск)...'):
                     try:
                         recs_ed = edited.to_dict('records') if hasattr(edited, 'to_dict') else list(edited)
                         rep = _st.apply_table_edits(name, heads, rows, recs_ed)
@@ -596,7 +641,7 @@ with tab_tbl:
                     base = [{h: r.get(_st.HEADER_TO_KEY.get(h, h.lower()), '') for h in (heads or [])}
                             for r in rows]
                     base[sel] = {h: vals.get(h, base[sel][h]) for h in (heads or [])}
-                    with st.spinner('Сохраняю (пишу в Google)...'):
+                    with st.spinner('Сохраняю (пишу на Диск)...'):
                         try:
                             rep = _st.apply_table_edits(name, heads, rows, base)
                         except Exception as e:
@@ -609,7 +654,7 @@ with tab_tbl:
                     base = [{h: r.get(_st.HEADER_TO_KEY.get(h, h.lower()), '') for h in (heads or [])}
                             for r in rows]
                     del base[sel]
-                    with st.spinner('Удаляю (пишу в Google)...'):
+                    with st.spinner('Удаляю (пишу на Диск)...'):
                         try:
                             rep = _st.apply_table_edits(name, heads, rows, base)
                         except Exception as e:

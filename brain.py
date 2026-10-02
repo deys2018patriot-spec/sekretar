@@ -506,6 +506,18 @@ def backstop_extra(text: str, data: dict) -> dict:
     return data
 
 
+# Синонимы extra-ключей: опечатки и варианты ИИ сливаются в канон
+# (вместо вечной новой колонки на каждую опечатку).
+EXTRA_SYN = {
+    'оплата': 'сумма', 'цена': 'сумма', 'стоимость': 'сумма',
+    'ценник': 'сумма', 'сума': 'сумма', 'оплочено': 'сумма',
+    'скидочка': 'скидка', 'скидон': 'скидка',
+    'алергия': 'аллергия', 'алергия': 'аллергия',
+    'школа_': 'школа', 'класс_': 'класс',
+    'рекомендация': 'причина_скидки',
+}
+
+
 def parse_client_text(text: str) -> dict:
     """Gemini -> локально. Плюс нормализация ключей и добор extra."""
     d = parse_with_gemini(text)
@@ -522,12 +534,16 @@ def parse_client_text(text: str) -> dict:
         d.setdefault('extra', {})
         if not isinstance(d['extra'], dict):
             d['extra'] = {}
-        # чистка extra: только строки, короткие ключи
+        # чистка extra: только строки, короткие ключи + синонимы в канон
         clean = {}
         for k, v in d['extra'].items():
             kk = str(k).strip().lower()[:30]
+            kk = EXTRA_SYN.get(kk, kk)
             if kk and kk not in CORE_KEYS and str(v).strip():
-                clean[kk] = str(v).strip()[:200]
+                if kk in clean and clean[kk] != str(v).strip()[:200]:
+                    clean[kk] = clean[kk] + '; ' + str(v).strip()[:200]
+                else:
+                    clean[kk] = str(v).strip()[:200]
         d['extra'] = clean
         d = backstop_extra(text, d)
         d = backstop_fio(text, d)

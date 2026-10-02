@@ -1,7 +1,8 @@
-"""Веб-запуск: секреты из env + восстановление clients.xlsx из Google Sheets.
+"""Веб-запуск: секреты из env + восстановление clients.xlsx с Яндекс.Диска.
 
 Вызывается ПЕРВЫМ из streamlit_app.py (до brain/storage/agent).
-Ничего в существующих .py не меняет, только читает их публичные функции.
+Источник правды — мастер-файл на Яндекс.Диске; Google Sheets оставлен
+запасным путём (для кнопки переезда), локальный файл — кэш.
 """
 import os
 import time
@@ -9,9 +10,9 @@ import time
 BASE = os.path.dirname(os.path.abspath(__file__))
 
 # Кэш копирования: каждый ререндер Streamlit заново выполняет скрипт,
-# без кэша это были бы 4+ медленных запроса к Google на КАЖДЫЙ клик.
+# без кэша это были бы медленные запросы на КАЖДЫЙ клик.
 _PULL_CACHE = {'ts': 0.0, 'report': None}
-PULL_TTL = 600  # секунд; кнопка «Обновить из Google» обходит кэш через force=True
+PULL_TTL = 600  # секунд; кнопка «Обновить с Диска» обходит кэш через force=True
 
 
 def _write_if_missing(path: str, content: str) -> bool:
@@ -65,13 +66,11 @@ def load_secrets() -> dict:
 
 
 def pull_google_to_local(force: bool = False) -> dict:
-    """Полное копирование ВСЕХ листов Google Sheets в локальный xlsx.
+    """Копия мастера с Яндекс.Диска в локальный xlsx (запасной путь — Google).
 
-    Google Sheets — источник правды: вся таблица переписывается из облака
-    при старте и по кнопке «Обновить из Google» (force=True).
-    Между этим — кэш PULL_TTL, чтобы каждый клик не ждал ~15с API.
-    Если Google недоступен, а локальный файл есть — работаем с ним.
+    Порядок: Диск → Google Sheets → локальный файл как есть.
     Возвращает {'ok': bool, 'rows': int (всего), 'sheets': {лист: строк}, 'reason': str}.
+    Имя функции оставлено ради совместимости со streamlit_app.
     """
     if not force and _PULL_CACHE['report'] is not None \
             and time.time() - _PULL_CACHE['ts'] < PULL_TTL:
@@ -79,11 +78,62 @@ def pull_google_to_local(force: bool = False) -> dict:
         rep['reason'] = rep.get('reason', '') + ' (кэш)'
         rep['sheets'] = dict(rep.get('sheets') or {})
         return rep
-    rep = _do_pull_google_to_local()
+    rep = _do_pull_yandex_to_local()
+    if not rep.get('ok') and rep.get('rows', 0) == 0:
+        rep = _do_pull_google_to_local()
     _PULL_CACHE['ts'] = time.time()
     _PULL_CACHE['report'] = {'ok': rep.get('ok'), 'rows': rep.get('rows'),
                              'sheets': dict(rep.get('sheets') or {}), 'reason': rep.get('reason')}
     return rep
+
+
+def _do_pull_yandex_to_local() -> dict:
+    import storage
+
+    xlsx = os.path.join(BASE, 'clients.xlsx')
+    try:
+        import yandex_store
+    except Exception as e:
+        if os.path.exists(xlsx):
+            return {'ok': True, 'rows': -1, 'sheets': {}, 'reason': 'модуль Диска недоступен, работаю локально'}
+        return {'ok': False, 'rows': 0, 'sheets': {}, 'reason': f'нет yandex_store: {e}'}
+    if not yandex_store.get_token():
+        if os.path.exists(xlsx):
+            return {'ok': True, 'rows': -1, 'sheets': {}, 'reason': 'нет YANDEX_DISK_TOKEN, работаю локально'}
+        return {'ok': False, 'rows': 0, 'sheets': {}, 'reason': 'нет YANDEX_DISK_TOKEN'}
+    # diff-превью: counts локальной копии ДО скачивания
+    before = {}
+    if os.path.exists(xlsx):
+        try:
+            import openpyxl as _ox
+            _wb0 = _ox.load_workbook(xlsx, read_only=True, data_only=True)
+            for _sn in _wb0.sheetnames:
+                try:
+                    before[_sn] = max(0, _wb0[_sn].max_row - 1)
+                except Exception:
+                    pass
+            _wb0.close()
+        except Exception:
+            before = {}
+    dl = yandex_store.download_master()
+    if not dl.get('ok'):
+        if os.path.exists(xlsx):
+            return {'ok': True, 'rows': -1, 'sheets': {}, 'reason': dl.get('reason', '') + ', работаю локально'}
+        return {'ok': False, 'rows': 0, 'sheets': {}, 'reason': dl.get('reason', '')}
+    try:
+        per = {s: len(storage.read_sheet(s)[1]) for s in storage.read_all_sheets()}
+        total = sum(per.values())
+        detail = ', '.join(f'{k}: {v}' for k, v in per.items())
+        diffs = []
+        for s, n in per.items():
+            b = before.get(s)
+            if b is not None and b != n:
+                diffs.append(f'{s}: {b}→{n}')
+        diff_txt = (' Изменения: ' + '; '.join(diffs) + '.') if diffs else ' Без изменений.'
+        return {'ok': True, 'rows': total, 'sheets': per,
+                'reason': f'скопировано с Яндекс.Диска: всего {total} строк. {detail}.{diff_txt}'}
+    except Exception as e:
+        return {'ok': True, 'rows': -1, 'sheets': {}, 'reason': f'скачано, но не прочиталось ({e})'}
 
 
 def _do_pull_google_to_local() -> dict:

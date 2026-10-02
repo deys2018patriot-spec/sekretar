@@ -1,4 +1,9 @@
-"""Напоминания: локально бесплатно + Google Calendar."""
+"""Напоминания: только локально (reminders.json).
+
+Раньше дублировались в Google Calendar — после переезда на Яндекс.Диск
+календаря-провайдера нет, поэтому всё живёт в локальном файле.
+Показываются на сайте блоком «⏰ Пора перезвонить».
+"""
 import json
 import os
 from datetime import datetime
@@ -25,56 +30,18 @@ def add_local_reminder(fio: str, callback_iso: str, phone: str = ''):
     data = _load()
     item = {'fio': fio, 'callback_dt': callback_iso, 'phone': phone,
             'created': datetime.now().isoformat()}
-    # пробуем Google Calendar (если настроен) - не роняем если нет
-    try:
-        from google_sync import create_calendar_event
-        ev = create_calendar_event(f'Перезвонить: {fio} {phone}', callback_iso, f'Клиент лагеря: {fio}, тел {phone}')
-        item['event_id'] = ev.get('id', '')
-    except Exception as e:
-        print(f'[Calendar] только локально ({e})')
     data.append(item)
     _save(data)
     return item
 
 
 def clear_all() -> dict:
-    """Сносит ВСЕ напоминания: локальные + события в Google Calendar. Возвращает счетчики."""
+    """Сносит ВСЕ локальные напоминания. Возвращает счетчики."""
     data = _load()
     n_local = len(data)
-    n_cal = 0
-    ids = [d.get('event_id') for d in data if d.get('event_id')]
-    if ids:
-        try:
-            import google_sync
-            svc = google_sync._service('calendar', 'v3')
-            for eid in ids:
-                try:
-                    svc.events().delete(calendarId='primary', eventId=eid).execute()
-                    n_cal += 1
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f'[Calendar clear] {e}')
-    # старые события без сохраненного ID — ищем по названию и сносим
-    try:
-        import google_sync
-        n_cal += google_sync.delete_events_by_text('Перезвонить')
-    except Exception as e:
-        print(f'[Calendar sweep] {e}')
-    # Google Задачи про перезвон
-    n_tasks, tasks_err = 0, ''
-    try:
-        import google_sync
-        ok, err = google_sync._tasks_ok()
-        if ok:
-            n_tasks = google_sync.delete_call_tasks()
-        else:
-            tasks_err = err
-    except Exception as e:
-        tasks_err = str(e)[:200]
     _save([])
-    return {'local': n_local, 'calendar': n_cal, 'tasks': n_tasks,
-            'no_event_id': n_local - len(ids), 'tasks_err': tasks_err}
+    return {'local': n_local, 'calendar': 0, 'tasks': 0,
+            'no_event_id': 0, 'tasks_err': ''}
 
 
 def due_reminders():
@@ -90,7 +57,7 @@ def due_reminders():
 
 
 def remove_for(fio: str = '', phone: str = '') -> dict:
-    """Снимает напоминания человека: локальные + события Calendar. Возвращает счетчики."""
+    """Снимает локальные напоминания человека. Возвращает счетчики."""
     import re
     data = _load()
     ph = re.sub(r'\D', '', phone or '')
@@ -103,40 +70,5 @@ def remove_for(fio: str = '', phone: str = '') -> dict:
             a, b = fio.lower().strip(), str(d.get('fio', '')).lower().strip()
             hit = bool(a and b) and (a in b or b in a or SequenceMatcher(None, a, b).ratio() > 0.75)
         (gone if hit else keep).append(d)
-    n_cal = 0
-    eids = [d.get('event_id') for d in gone if d.get('event_id')]
-    try:
-        import google_sync
-        if eids:
-            svc = google_sync._service('calendar', 'v3')
-            for eid in eids:
-                try:
-                    svc.events().delete(calendarId='primary', eventId=eid).execute()
-                    n_cal += 1
-                except Exception:
-                    pass
-        elif gone and fio:
-            # без сохраненных ID — ищем событие по имени
-            svc = google_sync._service('calendar', 'v3')
-            from datetime import timedelta, timezone
-            now = datetime.now(timezone.utc)
-            page = None
-            while True:
-                res = svc.events().list(calendarId='primary', q=fio,
-                    timeMin=(now - timedelta(days=730)).isoformat(),
-                    timeMax=(now + timedelta(days=730)).isoformat(),
-                    singleEvents=True, maxResults=50, pageToken=page).execute()
-                for ev in res.get('items', []):
-                    if 'Клиент лагеря:' in str(ev.get('description', '')) and fio.lower().split()[0] in str(ev.get('summary', '')).lower():
-                        try:
-                            svc.events().delete(calendarId='primary', eventId=ev['id']).execute()
-                            n_cal += 1
-                        except Exception:
-                            pass
-                page = res.get('nextPageToken')
-                if not page:
-                    break
-    except Exception as e:
-        print(f'[Calendar remove] {e}')
     _save(keep)
-    return {'local': len(gone), 'calendar': n_cal}
+    return {'local': len(gone), 'calendar': 0}

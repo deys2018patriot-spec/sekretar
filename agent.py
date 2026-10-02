@@ -1,5 +1,5 @@
 """Агент: ИИ выполняет команды по таблицам (править/переносить/удалять/колонки).
-Песочница: только папка secretary + Google Sheets/Calendar. Дальше ноута не лезет.
+Песочница: только папка secretary + Яндекс.Диск. Дальше ноута не лезет.
 """
 import os
 import re
@@ -40,12 +40,13 @@ SYSTEM = """Ты агент-аналитик с ПОЛНЫМ доступом к
 - {"tool":"stats"} — сводка: сколько всего, по сменам и статусам (для вопросов "сколько/анализ/сводка")
 - {"tool":"update","query":"Иванов","fields":{"status":"Оплачено"}} — обновить найденные
 - {"tool":"update_id","id":"123456","fields":{"shift":"Зима 26"}} — обновить по ID
+- {"tool":"bulk_update","query":"Зима 26","fields":{"status":"Оплачено"}} — обновить ВСЕХ найденных разом (больше 10 — откажу и скажу число)
 - {"tool":"move","query":"Иванов","shift":"Зима 26"} — перенести в смену
 - {"tool":"delete","query":"Иванов"} — удалить найденные
 - {"tool":"add_column","name":"аллергия"} — новая колонка во всех листах
 - {"tool":"create_table","name":"Должники","header":["ФИО","Сумма"],"rows":[["Иванов",5000]]} — НОВЫЙ лист-таблица (создавай, когда просят "создай таблицу/список/лист" или когда данные не ложатся в клиентов: например отдельный учёт, долги, отчёт)
-- {"tool":"remind","query":"Иванов","when":"2026-09-27T15:00:00"} — напоминание в календарь
-- {"tool":"clear_reminders"} — удалить ВСЕ напоминания (локальные + Calendar)
+- {"tool":"remind","query":"Иванов","when":"2026-09-27T15:00:00"} — напоминание на сайте (блок «Пора перезвонить»)
+- {"tool":"clear_reminders"} — удалить ВСЕ локальные напоминания
 - {"tool":"remember","text":"текст правила"} — запомнить бизнес-правило на будущее
 - {"tool":"clarify"} — если из команды непонятно кого/что делать
 Поля fields: fio_child,parent_fio,phone,age,shift,status,callback_dt,comment + ЛЮБЫЕ новые (маленькими русскими словами через подчёркивание: аллергия, школа, сумма, источник, ...).
@@ -227,6 +228,15 @@ def execute(cmd: str) -> str:
             elif tool == 'update_id':
                 ok = st.update_by_id(a['id'], a.get('fields', {}))
                 log.append(f"✏️ id={a['id']}: {'ок' if ok else 'не найден'}")
+            elif tool == 'bulk_update':
+                rows = st.find_ids(a.get('query', ''))
+                if len(rows) > 10:
+                    log.append(f"⛔ Групповое задевает {len(rows)} записей — много. Уточни запрос или скажи «примени всё равно».")
+                elif not rows:
+                    log.append(f"🔎 «{a.get('query')}» не нашел — некого обновлять.")
+                else:
+                    total, ok = st.bulk_update(a.get('query', ''), a.get('fields', {}))
+                    log.append(f'✏️ Групповое: обновлено {ok}/{total}: {a.get("fields")}')
             elif tool == 'move':
                 rows = st.find_ids(a.get('query', ''))
                 n = sum(1 for r in rows if st.set_shift(r['id'], a['shift']))
@@ -243,14 +253,10 @@ def execute(cmd: str) -> str:
             elif tool == 'clear_reminders':
                 from reminders import clear_all
                 r = clear_all()
-                parts = []
-                if r['local'] or r['calendar'] or r.get('tasks'):
-                    parts.append(f"🗑 Удалено: локально {r['local']}, Calendar {r['calendar']}, Задачи {r.get('tasks', 0)}")
+                if r['local']:
+                    log.append(f"🗑 Удалено локальных напоминаний: {r['local']}")
                 else:
-                    parts.append('✅ Чистить нечего — напоминаний нет ни локально, ни в Календаре')
-                if r.get('tasks_err'):
-                    parts.append('⚠️ Задачи Google не подключены: включи Tasks API и перезайди (python auth_google.py)')
-                log.append('\n'.join(parts))
+                    log.append('✅ Чистить нечего — напоминаний нет')
             elif tool == 'add_column':
                 heads = st.add_column(a['name'])
                 log.append(f"🆕 Колонка '{a['name']}', всего: {len(heads)}")
@@ -259,16 +265,7 @@ def execute(cmd: str) -> str:
                 header = a.get('header') or ['ФИО ребенка', 'Телефон', 'Заметка']
                 rows = a.get('rows') or []
                 n = st.write_sheet_local(name, header, rows)
-                pushed = ''
-                try:
-                    import google_sync as _gs
-                    if _gs.get_sheet_id():
-                        with _gs._API_LOCK:
-                            _svc = _gs._service('sheets', 'v4')
-                            _gs.push_table(name, header, rows, _svc=_svc)
-                        pushed = ' + Google Sheets'
-                except Exception as e:
-                    pushed = f' (в Google не улетело: {str(e)[:120]})'
+                pushed = ' + мастер на Яндекс.Диске'
                 log.append(f'📋 Таблица «{name}»: {n} строк{pushed}. Открой вкладку «📊 Таблицы».')
             elif tool == 'stats':
                 rows = st.read_all()
@@ -282,6 +279,20 @@ def execute(cmd: str) -> str:
                     total,
                     ', '.join(f'{k} — {v}' for k, v in by_shift.items()) or 'пусто',
                     ', '.join(f'{k} — {v}' for k, v in by_status.items()) or 'пусто'))
+                try:
+                    import re as _re
+                    debt_n, debt_s = 0, 0.0
+                    for r in rows:
+                        if str(r.get('status', '')) in ('Новая', 'Перезвонить', 'Думает'):
+                            debt_n += 1
+                            try:
+                                debt_s += float(_re.sub(r'[^\d.]', '', str(r.get('сумма', '')).replace(',', '.')) or 0)
+                            except Exception:
+                                pass
+                    if debt_n:
+                        log.append(f'💰 Не оплатили: {debt_n} (долг {int(debt_s)} ₽). Лист «Долги» — кнопка «Пересчитать отчёты».')
+                except Exception:
+                    pass
             elif tool == 'remind':
                 from reminders import add_local_reminder
                 rows = st.find_ids(a.get('query', ''))
