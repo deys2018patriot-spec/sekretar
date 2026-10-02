@@ -249,11 +249,23 @@ callback_dt: дата-время перезвона в ISO (YYYY-MM-DDTHH:MM:SS)
 ЦЕНЫ (рубли, лагерь Защитник): полная стоимость 20000, со скидкой 17000, по рекомендации 15000.
 Правила сумм: если в тексте есть явная сумма — бери ее в extra сумма. Если явной суммы нет: "скидка/со скидкой" -> extra сумма "17000"; "по рекомендации/порекомендовал/рекомендация" -> extra сумма "15000" и extra причина_скидки — кто порекомендовал. Без скидок и сумм extra сумма не ставь.
 
+ФОРМАТ ОТВЕТА (нарушение = брак):
+- Ключи JSON СТРОГО английские, ровно эти 9: fio_child, parent_fio, phone,
+  age, shift, status, callback_dt, comment, extra. НИКАКИХ русских ключей
+  ("телефон", "сдвиг", "статус", "дополнительно" и т.п. — ЗАПРЕЩЕНЫ).
+- Значения ФИО — title-case ("Борис", а НЕ "БОРИС" и не "ребёнка Борис"):
+  вычищай служебные слова (зовут, ребёнка, мама, сын) из имён.
+- "мама Лена" = parent_fio "Лена". "зовут ребёнка Борис" = fio_child "Борис".
+  Слова "мама/папа" НИКОГДА не входят в имя; "зовут/ребёнка/сына/дочь"
+  НИКОГДА не входят в имя.
+
 Примеры:
 Вход: "Позвонила мама Иванова Мария, сын Тимофей Иванов 9 лет, +7 900 123-45-67, хочет в зимнюю смену защитник, аллергия на орехи, учится в 3 классе 12 школы, просила перезвонить завтра в 15:00"
 Выход: {{"fio_child":"Тимофей Иванов","parent_fio":"Иванова Мария","phone":"+79001234567","age":"9","shift":"Зима 26","status":"Перезвонить","callback_dt":"2026-09-27T15:00:00","comment":"хочет в зиму","extra":{{"аллергия":"на орехи","школа":"12, 3 класс"}}}}
 Вход: "Тимофей Иванов оплатил зиму 15000, чек скинула мама, порекомендовал сосед Петров"
 Выход: {{"fio_child":"Тимофей Иванов","parent_fio":"","phone":"","age":"","shift":"Зима 26","status":"Оплачено","callback_dt":"","comment":"оплата, чек есть","extra":{{"сумма":"15000","причина_скидки":"порекомендовал сосед Петров"}}}}
+Вход: "ребёнок 10 лет, мама Лена, зовут ребёнка Борис, хотят в осеннюю смену, аллергия на сладкое, он по рекомендации Дамира Гусева, получается скидка должна быть, он из школы 55 Советского района"
+Выход: {{"fio_child":"Борис","parent_fio":"Лена","phone":"","age":"10","shift":"Осень 26","status":"Новая","callback_dt":"","comment":"хочет в осень, скидка","extra":{{"аллергия":"на сладкое","школа":"55, Советский район","сумма":"15000","причина_скидки":"Дамир Гусев"}}}}
 Вход: {text}
 Сейчас: {now}
 Ответь ТОЛЬКО JSON.
@@ -288,11 +300,12 @@ def parse_with_gemini(text: str) -> dict | None:
                     s = str(e)
                     if '429' in s or 'RESOURCE_EXHAUSTED' in s or 'quota' in s.lower():
                         break  # квота на сегодня — сразу офлайн, без ожидания
-                    if '503' in s or 'UNAVAILABLE' in s or '500' in s:
+                    if '503' in s or 'UNAVAILABLE' in s or '500' in s \
+                            or '504' in s or 'DEADLINE' in s or 'Timeout' in s:
                         time.sleep(2)
                         continue
-                    if '404' not in s and 'NOT_FOUND' not in s:
-                        raise
+                    # 404 и всё прочее — не застреваем, пробуем следующую
+                    # модель (слабый lite в конце списка — страховка).
                     break
             if resp is not None:
                 break
@@ -317,10 +330,193 @@ def parse_with_gemini(text: str) -> dict | None:
         return None
 
 
+# Если слабая модель вернула русские ключи ("телефон", "сдвиг",
+# "дополнительно") — чиним в канонические английские без потери данных.
+KEY_ALIASES = {
+    'фио': 'fio_child', 'ребенок': 'fio_child', 'ребёнок': 'fio_child',
+    'имя': 'fio_child', 'дитя': 'fio_child', 'fio': 'fio_child',
+    'родитель': 'parent_fio', 'мама': 'parent_fio', 'папа': 'parent_fio',
+    'отец': 'parent_fio', 'мать': 'parent_fio',
+    'телефон': 'phone', 'тел': 'phone',
+    'возраст': 'age', 'лет': 'age',
+    'сдвиг': 'shift', 'смена': 'shift',
+    'статус': 'status',
+    'комментарий': 'comment', 'комментар': 'comment',
+    'дополнительно': 'extra', 'доп': 'extra', 'прочее': 'extra',
+    'дата': 'callback_dt', 'перезвон': 'callback_dt',
+}
+
+
+def _normalize_keys(d: dict) -> dict:
+    """Русские ключи модели -> английские. Каноника не затирается."""
+    out = dict(d)
+    for k in list(out.keys()):
+        nk = KEY_ALIASES.get(str(k).strip().lower())
+        if nk and nk not in out:
+            out[nk] = out.pop(k)
+        elif nk:
+            out.pop(k, None)
+    return out
+
+
+def _clean_fio_value(v: str) -> str:
+    """Вычищает служебные слова из имени: 'зовут ребёнка Борис' -> 'Борис'."""
+    words = [w for w in str(v).split()
+             if w.lower() not in ('зовут', 'ребенка', 'ребёнка', 'ребенок',
+                                  'ребёнок', 'сына', 'дочь', 'дочку', 'мама',
+                                  'папа', 'мать', 'отец', 'сын', 'дочка',
+                                  'лет', 'год', 'года', 'годик')]
+    return titlecase_fio(' '.join(words)) if words else ''
+
+
+BROKEN_FIO_WORDS = frozenset({
+    'лет', 'год', 'года', 'годик', 'зовут', 'мама', 'папа', 'мать', 'отец',
+    'ребенка', 'ребёнка', 'ребенок', 'ребёнок', 'сына', 'дочь', 'дочку',
+    'дочка', 'сын', 'хотят', 'хочет', 'ребёнок',
+})
+
+
+def backstop_fio(text: str, data: dict) -> dict:
+    """Добивка ФИО из текста, если значение пустое или с мусором.
+
+    Хорошие значения модели НЕ трогает — только пустые/сломанные.
+    """
+    def broken(v: str) -> bool:
+        if not str(v or '').strip():
+            return True
+        toks = [w.lower() for w in str(v).split()]
+        return any(w in BROKEN_FIO_WORDS for w in toks) or len(toks) > 3
+
+    if broken(data.get('fio_child', '')):
+        m = re.search(
+            r'[Зз]овут\s+(?:реб[её]нка|сына|дочь|дочку|девочку|мальчика)\s+'
+            r'([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){0,2})', text)
+        if not m:
+            m = re.search(
+                r'(?:сын|дочь|дочка|реб[её]нок|мальчик|девочка)\s+'
+                r'([А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)',
+                text)
+        if m:
+            data['fio_child'] = _clean_fio_value(m.group(1))
+    if broken(data.get('parent_fio', '')):
+        m = re.search(
+            r'(?:[Мм]ама|[Пп]апа|[Мм]ать|[Оо]тец)\s+'
+            r'([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)', text)
+        if m:
+            cand = _clean_fio_value(m.group(1))
+            if cand and cand != data.get('fio_child'):
+                data['parent_fio'] = cand
+            elif not cand:
+                data['parent_fio'] = ''
+    # Явные маркеры в тексте — авторитетны и бьют значения модели:
+    # "мама Лена" + "зовут ребёнка Борис" дают точную пару, даже если
+    # модель всё перепутала ("Лет Мама Лена" / "Зовут Ребёнка Борис").
+    m_kid = re.search(
+        r'[Зз]овут\s+(?:реб[её]нка|сына|дочь|дочку|девочку|мальчика)\s+'
+        r'([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){0,2})', text)
+    m_par = re.search(
+        r'(?:[Мм]ама|[Пп]апа|[Мм]ать|[Оо]тец)\s+'
+        r'([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)', text)
+    def _same_person(a: str, b: str) -> bool:
+        """Одна и та же персона (учитывает падежи: Тимофей/Тимофея)."""
+        ta = [w.lower() for w in str(a).split()]
+        tb = [w.lower() for w in str(b).split()]
+        return any(x[:5] == y[:5] for x in ta if len(x) > 3
+                   for y in tb if len(y) > 3)
+
+    if m_kid:
+        kid = _clean_fio_value(m_kid.group(1))
+        if kid and data.get('fio_child') != kid \
+                and not _same_person(data.get('fio_child', ''), kid):
+            if data.get('parent_fio') == kid:
+                data['parent_fio'] = data['fio_child']  # перестановка
+            data['fio_child'] = kid
+    if m_par:
+        par = _clean_fio_value(m_par.group(1))
+        if par and data.get('parent_fio') != par \
+                and not _same_person(data.get('parent_fio', ''), par):
+            if data.get('fio_child') == par and not m_kid:
+                data['fio_child'] = data['parent_fio']  # перестановка
+            data['parent_fio'] = par
+    return data
+
+
+def backstop_extra(text: str, data: dict) -> dict:
+    """Детерминированный добор фактов в extra, если ИИ их пропустил.
+
+    Работает и на ответе Gemini (добивка), и на parse_local.
+    Значения модели НЕ перезаписывает — только заполняет пустоты.
+    """
+    t = text.lower()
+    ex = data.setdefault('extra', {})
+    if not isinstance(ex, dict):
+        ex = data['extra'] = {}
+    has = {k.lower() for k in ex if str(ex[k]).strip()}
+
+    def put(k: str, v: str, force: bool = False):
+        if v and str(v).strip() and (force or k not in has):
+            ex[k] = str(v).strip()[:200]
+            has.add(k)
+
+    m = re.search(r'аллерги[яи]\s+на\s+([а-яёa-z]+(?:\s+[а-яёa-z]+)?)', t)
+    if m:
+        words = m.group(1).split()
+        while words and words[-1] in ('также', 'еще', 'ещё', 'и', 'а', 'но',
+                                      'вот', 'же', 'он', 'она', 'есть'):
+            words.pop()
+        if words:
+            put('аллергия', 'на ' + ' '.join(words[:2]), force=True)
+    elif re.search(r'\bаллерги[яик]', t):
+        put('аллергия', 'есть (уточнить)')
+    parts = []
+    m = re.search(r'(?:школ[аыи]\s*)(\d{1,3})', t)
+    if m:
+        parts.append(m.group(1))
+    if 'советского района' in t or 'советский район' in t:
+        parts.append('Советский район')
+    else:
+        m = re.search(r'([а-яё]+)\s+район', t)
+        if m:
+            parts.append(titlecase_fio(m.group(1) + ' район'))
+    m = re.search(r'(\d{1,2})\s*класс', t)
+    if m:
+        parts.append(m.group(1) + ' класс')
+    if parts:
+        put('школа', ', '.join(parts))
+    m = re.search(r'по\s+рекомендации\s+([а-яё]+\s+[а-яё]+(?:\s+[а-яё]+)?)', t)
+    if not m:
+        m = re.search(r'рекомендаци[яи]\s+([а-яё]+\s+[а-яё]+)', t)
+    if not m:
+        m = re.search(r'порекомендовал[аи]?\s+([а-яё]+\s+[а-яё]+)', t)
+    if m:
+        words = m.group(1).split()
+        while words and words[-1] in ('получается', 'значит', 'вот', 'типа',
+                                      'мол', 'также', 'еще', 'ещё'):
+            words.pop()
+        if words:
+            put('причина_скидки', titlecase_fio(' '.join(words[:2])),
+                force=True)
+    m = re.search(r'(\d{4,6})\s*(?:руб|р\.|₽|тысяч|т\.р)', t)
+    if m:
+        put('сумма', m.group(1), force=True)
+    elif re.search(r'по\s+рекомендации|рекомендаци|порекомендовал', t):
+        put('сумма', '15000')
+    elif re.search(r'скидк', t):
+        put('сумма', '17000')
+    return data
+
+
 def parse_client_text(text: str) -> dict:
-    """Gemini -> локально."""
+    """Gemini -> локально. Плюс нормализация ключей и добор extra."""
     d = parse_with_gemini(text)
     if d:
+        d = _normalize_keys(d)
+        # чиним имена: модель иногда кладёт "зовут ребёнка Борис" целиком
+        for fk in ('fio_child', 'parent_fio'):
+            if d.get(fk):
+                fixed = _clean_fio_value(d[fk])
+                if fixed:
+                    d[fk] = fixed
         for k in CORE_KEYS:
             d.setdefault(k, '')
         d.setdefault('extra', {})
@@ -333,13 +529,17 @@ def parse_client_text(text: str) -> dict:
             if kk and kk not in CORE_KEYS and str(v).strip():
                 clean[kk] = str(v).strip()[:200]
         d['extra'] = clean
+        d = backstop_extra(text, d)
+        d = backstop_fio(text, d)
         if not d.get('comment'):
             d['comment'] = text[:80]
         else:
             # comment — короткая суть, не простыня: режем до 120 символов
             d['comment'] = str(d['comment'])[:120]
         return d
-    return parse_local(text)
+    d = parse_local(text)
+    d = backstop_extra(text, d)
+    return backstop_fio(text, d)
 
 
 def similarity(a: str, b: str) -> float:
