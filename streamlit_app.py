@@ -21,48 +21,79 @@ st.set_page_config(page_title='Секретарь лагеря', page_icon='📋
 st.markdown('''<style>
 /* Убрать стандартную серую дымку спиннера */
 [data-testid="stSpinner"] { visibility: hidden !important; height: 0 !important; }
-/* Фон-микросхема: тонкие дорожки с контактными площадками поверх всего,
-   едва видны в покое. Пока сайт думает (есть спиннер) — по дорожкам
-   бежит ток: светящиеся импульсы + лёгкая подсветка платы. */
+/* Фон-микросхема: лежит ПОД контентом (z-index 0), контент поднят выше
+   с прозрачным фоном — дорожки видны только в просветах между формами,
+   целиком не видны никогда. Ток — отдельный слой поверх (только точки). */
 .circuit-board {
-  position: fixed; inset: 0; pointer-events: none; z-index: 9999999;
-  opacity: .5; transition: opacity .6s ease;
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  opacity: .55;
 }
-.circuit-board .traces { opacity: .55; }
-.circuit-board .current { opacity: 0; transition: opacity .5s ease; }
-body:has(div[data-testid="stSpinner"]) .circuit-board { opacity: .9; }
-body:has(div[data-testid="stSpinner"]) .circuit-board .current { opacity: 1; }
+[data-testid="stAppViewContainer"], [data-testid="stMain"],
+[data-testid="stHeader"], [data-testid="stBottom"] {
+  position: relative; z-index: 1; background: transparent !important;
+}
+[data-testid="stVerticalBlock"] { background: transparent !important; }
+.circuit-current {
+  position: fixed; inset: 0; pointer-events: none; z-index: 9999999;
+  opacity: 0; transition: opacity .5s ease;
+}
+body:has(div[data-testid="stSpinner"]) .circuit-current { opacity: 1; }
 /* На телефоне — тише, чтобы не рябило */
 @media (max-width: 640px) {
   .circuit-board { opacity: .35; }
-  body:has(div[data-testid="stSpinner"]) .circuit-board { opacity: .6; }
 }
 </style><div class="circuit-board"><svg width="100%" height="100%" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1200 800">
-<g class="traces" stroke="#8aa4c8" stroke-width="2" fill="none">
-<path d="M-20,120 H320 L380,180 H700 L760,240 H1220"/>
+<g stroke="#9db4d4" stroke-width="1.6" fill="none" opacity=".8">
+<path d="M-20,80 H280 L340,140 H640 L700,200 H1220"/>
+<path d="M-20,160 H200 L260,220 H520 L580,280 H900 L960,340 H1220"/>
+<path d="M-20,300 H140 L200,360 H420 L480,420 H760 L820,480 H1220"/>
 <path d="M-20,420 H180 L240,480 H560 L620,540 H1220"/>
+<path d="M-20,540 H260 L320,600 H600 L660,660 H1000 L1060,720 H1220"/>
 <path d="M-20,680 H420 L480,620 H900 L960,560 H1220"/>
-<path d="M200,-20 V200 L260,260 V520 L320,580 V820"/>
-<path d="M600,-20 V140 L660,200 V420 L720,480 V820"/>
-<path d="M980,-20 V300 L1040,360 V620 L1100,680 V820"/>
-<path d="M-20,260 H120 L170,310 H340"/>
-<path d="M860,-20 V100 L910,150 H1220"/>
+<path d="M-20,740 H340 L400,680 H700 L760,740 H1220"/>
+<path d="M120,-20 V160 L180,220 V400 L240,460 V820"/>
+<path d="M300,-20 V100 L360,160 V360 L420,420 V700 L480,760 V820"/>
+<path d="M520,-20 V220 L580,280 V480 L640,540 V820"/>
+<path d="M720,-20 V120 L780,180 V380 L840,440 V700 L900,760 V820"/>
+<path d="M920,-20 V240 L980,300 V520 L1040,580 V820"/>
+<path d="M1080,-20 V340 L1140,400 V620 L1100,680 V820"/>
+<path d="M-20,240 H100 L150,290 H300 L350,340 H480"/>
+<path d="M700,-20 V60 L750,110 H980 L1030,160 H1220"/>
+<path d="M460,820 V720 L520,660 H760"/>
+<path d="M820,320 H980 L1040,380 H1220"/>
+<path d="M80,480 H240 L300,540 H480"/>
+<path d="M620,640 H800 L860,700 H1040"/>
 </g>
-<g class="traces" fill="#8aa4c8" stroke="none">
-<circle cx="320" cy="120" r="5"/><circle cx="700" cy="180" r="5"/>
-<circle cx="180" cy="420" r="5"/><circle cx="560" cy="480" r="5"/>
-<circle cx="420" cy="680" r="5"/><circle cx="900" cy="620" r="5"/>
-<circle cx="200" cy="200" r="5"/><circle cx="600" cy="140" r="5"/>
-<circle cx="980" cy="300" r="5"/><circle cx="340" cy="310" r="5"/>
-<circle cx="910" cy="150" r="5"/><circle cx="720" cy="480" r="5"/>
+<g fill="#9db4d4" stroke="none" opacity=".8">
+<circle cx="280" cy="80" r="4"/><circle cx="640" cy="140" r="4"/>
+<circle cx="200" cy="160" r="4"/><circle cx="520" cy="220" r="4"/><circle cx="900" cy="280" r="4"/>
+<circle cx="140" cy="300" r="4"/><circle cx="420" cy="360" r="4"/><circle cx="760" cy="420" r="4"/>
+<circle cx="180" cy="420" r="4"/><circle cx="560" cy="480" r="4"/>
+<circle cx="260" cy="540" r="4"/><circle cx="600" cy="600" r="4"/><circle cx="1000" cy="660" r="4"/>
+<circle cx="420" cy="680" r="4"/><circle cx="900" cy="620" r="4"/>
+<circle cx="340" cy="740" r="4"/><circle cx="700" cy="680" r="4"/>
+<circle cx="120" cy="160" r="4"/><circle cx="240" cy="460" r="4"/>
+<circle cx="300" cy="100" r="4"/><circle cx="420" cy="420" r="4"/><circle cx="480" cy="760" r="4"/>
+<circle cx="520" cy="220" r="4"/><circle cx="640" cy="540" r="4"/>
+<circle cx="720" cy="120" r="4"/><circle cx="840" cy="440" r="4"/><circle cx="900" cy="760" r="4"/>
+<circle cx="920" cy="240" r="4"/><circle cx="1040" cy="580" r="4"/>
+<circle cx="1080" cy="340" r="4"/><circle cx="1100" cy="680" r="4"/>
+<circle cx="100" cy="240" r="4"/><circle cx="350" cy="340" r="4"/>
+<circle cx="750" cy="110" r="4"/><circle cx="1030" cy="160" r="4"/>
+<circle cx="520" cy="660" r="4"/><circle cx="980" cy="320" r="4"/><circle cx="1040" cy="380" r="4"/>
+<circle cx="80" cy="480" r="4"/><circle cx="300" cy="540" r="4"/>
+<circle cx="620" cy="640" r="4"/><circle cx="860" cy="700" r="4"/>
 </g>
-<g class="current" fill="#2f7bff">
-<circle r="6"><animateMotion dur="2.8s" repeatCount="indefinite" path="M-20,120 H320 L380,180 H700 L760,240 H1220"/></circle>
+</svg></div><div class="circuit-current"><svg width="100%" height="100%" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1200 800">
+<g fill="#2f7bff">
+<circle r="6"><animateMotion dur="2.8s" repeatCount="indefinite" path="M-20,80 H280 L340,140 H640 L700,200 H1220"/></circle>
 <circle r="6" fill="#22b8d4"><animateMotion dur="3.6s" repeatCount="indefinite" path="M-20,420 H180 L240,480 H560 L620,540 H1220"/></circle>
 <circle r="6"><animateMotion dur="3.1s" repeatCount="indefinite" path="M-20,680 H420 L480,620 H900 L960,560 H1220"/></circle>
-<circle r="5" fill="#22b8d4"><animateMotion dur="2.4s" repeatCount="indefinite" path="M200,-20 V200 L260,260 V520 L320,580 V820"/></circle>
-<circle r="5"><animateMotion dur="3.9s" repeatCount="indefinite" path="M600,-20 V140 L660,200 V420 L720,480 V820"/></circle>
-<circle r="5" fill="#22b8d4"><animateMotion dur="2.9s" repeatCount="indefinite" path="M980,-20 V300 L1040,360 V620 L1100,680 V820"/></circle>
+<circle r="5" fill="#22b8d4"><animateMotion dur="2.4s" repeatCount="indefinite" path="M120,-20 V160 L180,220 V400 L240,460 V820"/></circle>
+<circle r="5"><animateMotion dur="3.9s" repeatCount="indefinite" path="M520,-20 V220 L580,280 V480 L640,540 V820"/></circle>
+<circle r="5" fill="#22b8d4"><animateMotion dur="2.9s" repeatCount="indefinite" path="M920,-20 V240 L980,300 V520 L1040,580 V820"/></circle>
+<circle r="5"><animateMotion dur="3.3s" repeatCount="indefinite" path="M-20,540 H260 L320,600 H600 L660,660 H1000 L1060,720 H1220"/></circle>
+<circle r="5" fill="#22b8d4"><animateMotion dur="2.6s" repeatCount="indefinite" path="M720,-20 V120 L780,180 V380 L840,440 V700 L900,760 V820"/></circle>
 </g>
 </svg></div>''', unsafe_allow_html=True)
 st.title('📋 Секретарь лагеря')
