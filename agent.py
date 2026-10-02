@@ -28,19 +28,30 @@ def save_rule(text: str) -> int:
         json.dump(rules, open(RULES_FILE, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
     return len(rules)
 
-SYSTEM = """Ты агент-исполнитель по таблице лагеря. Верни ТОЛЬКО JSON.
+AGENT_MODELS = ('gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest',
+                'gemini-flash-lite-latest')
+
+SYSTEM = """Ты агент-аналитик с ПОЛНЫМ доступом к таблицам лагеря. Верни ТОЛЬКО JSON.
+Ты умеешь не только править ячейки, но и развивать структуру: создавать колонки
+и новые таблицы-листы, анализировать данные.
+
 Доступные действия (actions - список):
 - {"tool":"find","query":"Иванов"} — найти строки
+- {"tool":"stats"} — сводка: сколько всего, по сменам и статусам (для вопросов "сколько/анализ/сводка")
 - {"tool":"update","query":"Иванов","fields":{"status":"Оплачено"}} — обновить найденные
 - {"tool":"update_id","id":"123456","fields":{"shift":"Зима 26"}} — обновить по ID
 - {"tool":"move","query":"Иванов","shift":"Зима 26"} — перенести в смену
 - {"tool":"delete","query":"Иванов"} — удалить найденные
-- {"tool":"add_column","name":"аллергия"} — новая колонка
+- {"tool":"add_column","name":"аллергия"} — новая колонка во всех листах
+- {"tool":"create_table","name":"Должники","header":["ФИО","Сумма"],"rows":[["Иванов",5000]]} — НОВЫЙ лист-таблица (создавай, когда просят "создай таблицу/список/лист" или когда данные не ложатся в клиентов: например отдельный учёт, долги, отчёт)
 - {"tool":"remind","query":"Иванов","when":"2026-09-27T15:00:00"} — напоминание в календарь
 - {"tool":"clear_reminders"} — удалить ВСЕ напоминания (локальные + Calendar)
 - {"tool":"remember","text":"текст правила"} — запомнить бизнес-правило на будущее
 - {"tool":"clarify"} — если из команды непонятно кого/что делать
-Поля fields: fio_child,parent_fio,phone,age,shift,status,callback_dt,comment + любые новые (маленькими).
+Поля fields: fio_child,parent_fio,phone,age,shift,status,callback_dt,comment + ЛЮБЫЕ новые (маленькими русскими словами через подчёркивание: аллергия, школа, сумма, источник, ...).
+ГЛАВНОЕ ПРАВИЛО СТРУКТУРЫ: новую информацию (аллергия, школа, сумма, скидка, пожелание, размер, адрес — всё что не базовое поле) клади в fields КАК НОВУЮ КОЛОНКУ. Таблица сама создаст колонку. ЗАПРЕЩЕНО сваливать факты в comment одной строкой — comment только короткая суть (до 80 символов), факты живут в отдельных полях.
+Если команда звучит как "запиши что у Иванова аллергия на орехи" — это update с полем {"аллергия":"на орехи"}, а НЕ comment.
+Если команда просит учёт, которого нет в колонках (долги, отчёт, список) — создавай create_table с понятным header и rows.
 Статусы: Новая, Перезвонить, Перезвонил, Думает, Оплачено, Отказ, Приехал. "Перезвонил" = звонок состоялся (напоминание снимается само). Смены строго: Осень 26, Зима 26, Весна 27 (понимай "зимняя смена/зима/защитник зима" как "Зима 26" и т.п.).
 ЦЕНЫ (рубли): полная 20000, со скидкой 17000, по рекомендации 15000. В полях extra сумма/скидка/причина_скидки используй их: "со скидкой" без суммы -> сумма "17000"; "по рекомендации" -> сумма "15000" + кто порекомендовал; явная сумма важнее.
 НИКОГДА не возвращай пустой actions. Если команда — указание/правило ("сумму пиши до скидки", "запомни что..."), верни {"tool":"remember"}. Если непонятно кого — верни clarify.
@@ -61,12 +72,12 @@ def _gemini_plan(cmd: str) -> dict | None:
         if rules:
             prompt += '\nЗапомненные правила (учитывай):\n' + '\n'.join(f'- {r}' for r in rules)
         cfg = types.GenerateContentConfig(
-            temperature=0.0, response_mime_type='application/json',
+            temperature=0.3, response_mime_type='application/json',
             http_options=types.HttpOptions(
                 timeout=20000,
                 retry_options=types.HttpRetryOptions(attempts=1)))
         last = None
-        for model in ('gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-flash-lite-latest'):
+        for model in AGENT_MODELS:
             try:
                 r = client.models.generate_content(
                     model=model, contents=prompt, config=cfg)
@@ -97,6 +108,25 @@ def _rule_plan(cmd: str) -> dict:
     # вычищаем служебное из запроса: "Тест Оплачено" -> "Тест"
     query = re.sub(r'\b(оплачено|оплачен|отказ|перезвонить|приехал|думает|новая|статус|смен[ауы]|осень|зиму?|зимняя|зимнюю|весну?|весенняя|защитник|2[67])\b', '', query, flags=re.IGNORECASE).strip()
     acts = []
+    if re.search(r'создай\s+(таблиц|лист|список)|нов\w+\s+(таблиц|лист)', t):
+        mn = re.search(r'(?:таблиц\w*|лист|список)\s+([а-яёa-z0-9 _-]{2,30})', cmd, re.IGNORECASE)
+        name = (mn.group(1).strip().title() if mn else 'Новая таблица')
+        name = re.sub(r'\s+с\s+колонками.*$', '', name, flags=re.IGNORECASE).strip() or 'Новая таблица'
+        mh = re.search(r'колонк\w*\s*[:\-]?\s*(.+)', cmd, re.IGNORECASE)
+        if mh:
+            header = [h.strip().title() or f'Кол{i+1}' for i, h in
+                      enumerate(re.split(r'[,;]+', mh.group(1).strip())) if h.strip()][:20]
+        else:
+            header = ['ФИО ребенка', 'Телефон', 'Заметка']
+        acts.append({'tool': 'create_table', 'name': name[:30],
+                     'header': header or ['Запись'], 'rows': []})
+        return {'actions': acts}
+    if re.search(r'сколько|статистика|сводка|анализ|посчитай|итог|сосчитай', t):
+        acts.append({'tool': 'stats'})
+        # "... по сменам/оплачено" — заодно показываем и конкретных людей
+        if query and len(query) > 2:
+            acts.append({'tool': 'find', 'query': query})
+        return {'actions': acts}
     if re.search(r'перенес|перемест', t):
         try:
             from brain import normalize_shift
@@ -224,6 +254,34 @@ def execute(cmd: str) -> str:
             elif tool == 'add_column':
                 heads = st.add_column(a['name'])
                 log.append(f"🆕 Колонка '{a['name']}', всего: {len(heads)}")
+            elif tool == 'create_table':
+                name = str(a.get('name', 'Новая таблица'))[:30] or 'Новая таблица'
+                header = a.get('header') or ['ФИО ребенка', 'Телефон', 'Заметка']
+                rows = a.get('rows') or []
+                n = st.write_sheet_local(name, header, rows)
+                pushed = ''
+                try:
+                    import google_sync as _gs
+                    if _gs.get_sheet_id():
+                        with _gs._API_LOCK:
+                            _svc = _gs._service('sheets', 'v4')
+                            _gs.push_table(name, header, rows, _svc=_svc)
+                        pushed = ' + Google Sheets'
+                except Exception as e:
+                    pushed = f' (в Google не улетело: {str(e)[:120]})'
+                log.append(f'📋 Таблица «{name}»: {n} строк{pushed}. Открой вкладку «📊 Таблицы».')
+            elif tool == 'stats':
+                rows = st.read_all()
+                total = len(rows)
+                by_shift: dict = {}
+                by_status: dict = {}
+                for r in rows:
+                    by_shift[str(r.get('shift') or '—')] = by_shift.get(str(r.get('shift') or '—'), 0) + 1
+                    by_status[str(r.get('status') or '—')] = by_status.get(str(r.get('status') or '—'), 0) + 1
+                log.append('📊 Всего: %d. По сменам: %s. По статусам: %s.' % (
+                    total,
+                    ', '.join(f'{k} — {v}' for k, v in by_shift.items()) or 'пусто',
+                    ', '.join(f'{k} — {v}' for k, v in by_status.items()) or 'пусто'))
             elif tool == 'remind':
                 from reminders import add_local_reminder
                 rows = st.find_ids(a.get('query', ''))
