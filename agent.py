@@ -187,8 +187,8 @@ def _rule_plan(cmd: str) -> dict:
     return {'actions': acts}
 
 
-def execute(cmd: str) -> str:
-    import storage as st
+def make_plan(cmd: str) -> dict:
+    """Только план без выполнения (для экрана «правильно понял?»)."""
     from brain import fix_layout
     cmd = fix_layout(cmd)
     print(f'[agent] команда: {cmd}')
@@ -196,9 +196,59 @@ def execute(cmd: str) -> str:
     if plan:
         print(f'[agent] план gemini: {plan}')
     if not plan or not plan.get('actions'):
-        # пустой план от модели = откат на правила, а не молчание
         print('[agent] пустой план, иду по правилам')
         plan = _rule_plan(cmd)
+    return {'cmd': cmd, 'actions': plan.get('actions', [])}
+
+
+def describe_plan(plan: dict) -> str:
+    """План человеческим языком + задетые записи (для подтверждения)."""
+    import storage as st
+    lines = []
+    for a in plan.get('actions', []):
+        tool = a.get('tool', '')
+        try:
+            if tool == 'find':
+                rows = st.find_ids(a.get('query', ''))
+                lines.append(f"🔎 Найти «{a.get('query')}» (нашлось: {len(rows)})")
+            elif tool == 'stats':
+                lines.append('📊 Посчитать сводку по базе')
+            elif tool == 'clarify':
+                lines.append('❓ Уточнить у тебя, кого имел в виду')
+            elif tool == 'remember':
+                lines.append(f"📝 Запомнить правило навсегда: «{a.get('text', '')}»")
+            elif tool == 'rules':
+                lines.append('📝 Показать запомненные правила')
+            elif tool in ('update', 'update_id', 'move', 'bulk_update'):
+                q = a.get('query', '') or ('id=' + str(a.get('id', '')))
+                rows = st.find_ids(q) if a.get('query') else []
+                n = f' (заденет: {len(rows)})' if a.get('query') else ''
+                lines.append(f"✏️ {tool}: «{q}» → {a.get('fields', a.get('shift', ''))}{n}")
+            elif tool == 'delete':
+                rows = st.find_ids(a.get('query', ''))
+                lines.append(f"⚠️ УДАЛИТЬ «{a.get('query')}» (заденет: {len(rows)})")
+            elif tool == 'clear_reminders':
+                lines.append('⚠️ Удалить ВСЕ напоминания')
+            elif tool == 'add_column':
+                lines.append(f"🆕 Новая колонка «{a.get('name')}»")
+            elif tool == 'create_table':
+                lines.append(f"📋 Новая таблица «{a.get('name')}»")
+            elif tool == 'remind':
+                lines.append(f"📅 Напоминание «{a.get('query')}» на {a.get('when')}")
+            else:
+                lines.append(f'❓ {tool} — не знаю такого')
+        except Exception as e:
+            lines.append(f'⚠️ {tool}: не смог оценить ({e})')
+    return '\n'.join(lines) if lines else 'Ничего делать не буду.'
+
+
+def execute(cmd: str) -> str:
+    return execute_plan(make_plan(cmd))
+
+
+def execute_plan(plan: dict) -> str:
+    import storage as st
+    cmd = plan.get('cmd', '')
     print(f'[agent] выполняю: {plan}')
     log = []
     for a in plan.get('actions', []):

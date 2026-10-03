@@ -342,22 +342,43 @@ with tab_req:
                 st.session_state['dups'] = []
                 st.rerun()
 
-    # --- ИИ-командная строка ---
+    # --- ИИ-командная строка: понял → «правильно?» → Да → доклад ---
     st.divider()
     st.subheader('🤖 Команда ИИ правит таблицы')
     st.caption('Примеры: перенеси Иванова в Зиму 26 | поставь Иванову Оплачено | удали Пупкина | добавь колонку аллергия')
+    st.session_state.setdefault('agent_pending', None)
     with st.form('ai_form', clear_on_submit=True):
         cmd = st.text_input('Команда', placeholder='Напиши команду и нажми Enter')
         submitted = st.form_submit_button('▶ Выполнить')
     if submitted and cmd and cmd.strip():
-        say(f'🤖 Команда: {cmd.strip()}')
         try:
             import agent
-            res = agent.execute(cmd.strip())
+            plan = agent.make_plan(cmd.strip())
+            desc = agent.describe_plan(plan)
         except Exception as e:
-            res = f'⚠️ {e}'
-        say(res)
+            plan, desc = None, f'⚠️ Не понял: {e}'
+        st.session_state['agent_pending'] = {'cmd': cmd.strip(), 'plan': plan,
+                                             'desc': desc}
         st.rerun()
+    pend = st.session_state.get('agent_pending')
+    if pend:
+        st.info(f"🤖 Команда: {pend['cmd']}\n\nЯ правильно понял?\n{pend['desc']}")
+        c_yes, c_no = st.columns(2)
+        with c_yes:
+            if st.button('✅ Да, выполняй', type='primary', use_container_width=True):
+                try:
+                    import agent
+                    res = agent.execute_plan(pend['plan']) if pend['plan'] else 'Ничего делать не буду.'
+                except Exception as e:
+                    res = f'⚠️ {e}'
+                say(f"🤖 Команда: {pend['cmd']}\n✅ Сделано:\n{res}")
+                st.session_state['agent_pending'] = None
+                st.rerun()
+        with c_no:
+            if st.button('❌ Нет, отмена', use_container_width=True):
+                say(f"🤖 Команда: {pend['cmd']}\n❌ Отменено, ничего не делал.")
+                st.session_state['agent_pending'] = None
+                st.rerun()
 
     # --- журнал в st-сессии ---
     st.divider()
