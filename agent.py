@@ -142,7 +142,7 @@ def _rule_plan(cmd: str) -> dict:
         if shift and query:
             acts.append({'tool': 'move', 'query': query, 'shift': shift})
         if st and query:
-            acts.append({'tool': 'update', 'query': query, 'fields': {'status': st}})
+            acts.append({'tool': 'bulk_update', 'query': query, 'fields': {'status': st}})
         if not acts and query:
             acts.append({'tool': 'find', 'query': query})
     elif re.search(r'удали', t):
@@ -162,7 +162,7 @@ def _rule_plan(cmd: str) -> dict:
                 st = v
                 break
         if query:
-            acts.append({'tool': 'update', 'query': query, 'fields': {'status': st}})
+            acts.append({'tool': 'bulk_update', 'query': query, 'fields': {'status': st}})
     elif re.search(r'напомни|перезвони', t):
         from brain import parse_callback_datetime
         cb = parse_callback_datetime(cmd)
@@ -229,14 +229,18 @@ def execute(cmd: str) -> str:
                 ok = st.update_by_id(a['id'], a.get('fields', {}))
                 log.append(f"✏️ id={a['id']}: {'ок' if ok else 'не найден'}")
             elif tool == 'bulk_update':
+                force = 'всё равно' in cmd.lower() or 'все равно' in cmd.lower()
                 rows = st.find_ids(a.get('query', ''))
-                if len(rows) > 10:
+                if len(rows) > 10 and not force:
                     log.append(f"⛔ Групповое задевает {len(rows)} записей — много. Уточни запрос или скажи «примени всё равно».")
                 elif not rows:
                     log.append(f"🔎 «{a.get('query')}» не нашел — некого обновлять.")
                 else:
-                    total, ok = st.bulk_update(a.get('query', ''), a.get('fields', {}))
-                    log.append(f'✏️ Групповое: обновлено {ok}/{total}: {a.get("fields")}')
+                    total, ok = st.bulk_update(a.get('query', ''), a.get('fields', {}), force=force)
+                    if total > 10 and not force and ok == 0:
+                        log.append(f"⛔ Групповое задевает {total} записей — много. Уточни запрос или скажи «примени всё равно».")
+                    else:
+                        log.append(f'✏️ Групповое: обновлено {ok}/{total}: {a.get("fields")}')
             elif tool == 'move':
                 rows = st.find_ids(a.get('query', ''))
                 n = sum(1 for r in rows if st.set_shift(r['id'], a['shift']))

@@ -18,6 +18,13 @@ SHEETS = ['Общая', 'Осень 26', 'Зима 26', 'Весна 27']
 OLD_SHEETS = ['Смена 1', 'Смена 2', 'Смена 3', 'Смена 4']
 
 
+def _save_wb(wb) -> None:
+    """Атомарное сохранение книги: tmp + replace (не бьём файл при обрыве)."""
+    tmp = FILE + '.tmp'
+    wb.save(tmp)
+    os.replace(tmp, FILE)
+
+
 def _ensure_wb():
     if os.path.exists(FILE):
         wb = load_workbook(FILE)
@@ -27,7 +34,7 @@ def _ensure_wb():
         wb.active.append([h for _, h in CORE])
         for s in SHEETS[1:]:
             wb.create_sheet(s).append([h for _, h in CORE])
-        wb.save(FILE)
+        _save_wb(wb)
         return wb
     for s in SHEETS:
         if s not in wb.sheetnames:
@@ -37,7 +44,7 @@ def _ensure_wb():
     for s in dropped:
         del wb[s]
     if dropped:
-        wb.save(FILE)
+        _save_wb(wb)
     return wb
 
 
@@ -97,11 +104,14 @@ def read_all_sheets() -> dict:
     return {s: read_sheet(s) for s in wb.sheetnames}
 
 
-def write_sheet_local(sheet: str, header: list, rows: list) -> int:
+def write_sheet_local(sheet: str, header: list, rows: list, force: bool = False) -> int:
     """Полностью заменяет/создаёт лист локально (для импорта файлов).
 
+    Generated-листы (Долги/Отчёт) без force=True не трогает.
     Возвращает число записанных строк.
     """
+    if sheet in GENERATED and not force:
+        raise ValueError(f'лист «{sheet}» generated — его строит кнопка «Пересчитать отчёты», выбери другое имя')
     from openpyxl import Workbook
     if os.path.exists(FILE):
         wb = load_workbook(FILE)
@@ -129,7 +139,7 @@ def write_sheet_local(sheet: str, header: list, rows: list) -> int:
         if ws0.max_row == 1 and ws0.max_column == 1 and not ws0['A1'].value and sn != sheet:
             if len(wb.sheetnames) > 1:
                 del wb[sn]
-    wb.save(FILE)
+    _save_wb(wb)
     try:
         import yandex_store
         yandex_store.sync_after_change('импорт ' + sheet)
@@ -152,48 +162,73 @@ GENERATED = ['Долги', 'Отчёт']
 def validate_row(data: dict) -> dict:
     """Чинит поля записи: телефон, возраст, смена, статус, дата.
 
-    Невалидное не удаляет — правит к канону, а факт правки кладёт
+    Невалидное не удаляет — правит к канону, а факт правки ДОПИСЫВАЕТ
     в extra 'нужна_проверка'. Никогда не роняет.
     """
     try:
         from brain import extract_phone, normalize_shift
         d = dict(data)
         fixed = []
-        ph = extract_phone(str(d.get('phone', '')))
-        if ph != str(d.get('phone', '')):
-            d['phone'] = ph
-            if ph:
-                fixed.append('телефон')
-        age = re.sub(r'\D', '', str(d.get('age', '')))[:2]
-        if age and not (6 <= int(age) <= 17):
+        raw_ph = str(d.get('phone', '') or '').strip()
+        ph = extract_phone(raw_ph)
+        d['phone'] = ph
+        if raw_ph and not ph:
+            fixed.append('телефон')
+        m_age = re.search(r'(\d{1,2})', str(d.get('age', '') or ''))
+        age = m_age.group(1) if m_age else ''
+        if age and not (4 <= int(age) <= 18):
             age = ''
+        if age != str(d.get('age', '') or '').strip():
             fixed.append('возраст')
         d['age'] = age
-        sh = normalize_shift(str(d.get('shift', '')))
-        if sh != str(d.get('shift', '')) and str(d.get('shift', '')):
+        sh = normalize_shift(str(d.get('shift', '') or ''))
+        if sh != str(d.get('shift', '') or '').strip() and str(d.get('shift', '') or '').strip():
             fixed.append('смена')
             d['shift'] = sh
-        st = str(d.get('status', '') or 'Новая').strip().capitalize()
-        canon = {'Новая': 'Новая', 'Перезвонить': 'Перезвонить',
-                 'Перезвонил': 'Перезвонил', 'Думает': 'Думает',
-                 'Оплачено': 'Оплачено', 'Отказ': 'Отказ',
-                 'Приехал': 'Приехал', 'Оплачен': 'Оплачено',
-                 'Оплачена': 'Оплачено', 'Оплатить': 'Оплачено'}
-        if st not in ('Новая', 'Перезвонить', 'Перезвонил', 'Думает',
-                      'Оплачено', 'Отказ', 'Приехал'):
-            st = canon.get(st, 'Новая')
+        tl = str(d.get('status', '') or '').strip().lower()
+        if 'оплат' in tl or 'оплач' in tl or 'чек' in tl or 'внес' in tl or 'внёс' in tl:
+            st = 'Оплачено'
+        elif 'позвонил' in tl or 'дозвон' in tl or 'поговорил' in tl:
+            st = 'Перезвонил'
+        elif 'отказ' in tl or 'не едет' in tl or 'не едут' in tl or 'передумал' in tl:
+            st = 'Отказ'
+        elif 'приехал' in tl or 'заехал' in tl:
+            st = 'Приехал'
+        elif 'думает' in tl or 'посовет' in tl:
+            st = 'Думает'
+        elif 'перезвон' in tl or 'напомни' in tl or 'набери' in tl or tl in ('новая', 'новый', ''):
+            st = 'Перезвонить' if tl and tl != 'новая' and tl != 'новый' else 'Новая'
+        else:
+            st = 'Новая'
+        if st != str(d.get('status', '') or '').strip():
             fixed.append('статус')
         d['status'] = st
         cb = str(d.get('callback_dt', '') or '').strip()
         if cb:
+            iso = ''
             try:
                 datetime.fromisoformat(cb)
+                iso = cb
             except Exception:
-                d['callback_dt'] = ''
+                m = re.search(r'(\d{1,2})[.\/](\d{1,2})[.\/](\d{2,4})(?:\s+(\d{1,2})[:.](\d{2}))?', cb)
+                if m:
+                    dd, mm, yy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                    if yy < 100:
+                        yy += 2000
+                    hh, mi = int(m.group(4) or 12), int(m.group(5) or 0)
+                    try:
+                        iso = datetime(yy, mm, dd, hh, mi).isoformat()
+                    except ValueError:
+                        iso = ''
+            if iso != cb:
                 fixed.append('дата')
+            d['callback_dt'] = iso
         if fixed:
             ex = dict(d.get('extra', {}) or {})
-            ex.setdefault('нужна_проверка', ', '.join(fixed))
+            old = str(ex.get('нужна_проверка', '') or '').strip()
+            add = ', '.join(f for f in fixed if f not in old)
+            if add:
+                ex['нужна_проверка'] = (old + '; ' + add).strip('; ')[:200]
             d['extra'] = ex
         return d
     except Exception as e:
@@ -201,15 +236,18 @@ def validate_row(data: dict) -> dict:
         return data
 
 
-def bulk_update(query: str, fields: dict) -> tuple[int, int]:
+def bulk_update(query: str, fields: dict, force: bool = False) -> tuple[int, int]:
     """Групповое обновление: всем найденным — поля. Возвращает (всего, ок).
 
+    Без force больше 10 записей не трогает (вернёт (n, 0)).
     Одна заливка на Диск в конце + автоснапшот до старта.
     """
     import re
     rows = find_ids(query)
     if not rows:
         return 0, 0
+    if len(rows) > 10 and not force:
+        return len(rows), 0
     try:
         import yandex_store
         yandex_store.snapshot('bulk: ' + query[:40])
@@ -250,8 +288,15 @@ def export_csv(sheet: str) -> tuple[str, bytes]:
 
 
 def _sum_val(v) -> float:
+    """Сумма из строки: пробелы, ₽, 'тыс.' понимает; мусор → 0.0."""
     try:
-        return float(re.sub(r'[^\d.]', '', str(v).replace(',', '.')) or 0)
+        s = str(v or '').strip().lower().replace(',', '.')
+        mult = 1000.0 if 'тыс' in s or re.search(r'\bт\.?р', s) else 1.0
+        num = re.sub(r'[^\d.]', '', s)
+        parts = num.split('.')
+        if len(parts) > 2:
+            num = ''.join(parts[:-1]) + '.' + parts[-1]
+        return float(num or 0) * mult
     except Exception:
         return 0.0
 
@@ -265,7 +310,7 @@ def build_reports() -> dict:
     d_rows = [[r.get('fio_child', ''), r.get('phone', ''), r.get('shift', ''),
                r.get('status', ''), r.get('сумма', ''), r.get('callback_dt', '')]
               for r in unpaid]
-    write_sheet_local('Долги', d_heads, d_rows)
+    write_sheet_local('Долги', d_heads, d_rows, force=True)
     by_shift: dict = {}
     for r in rows:
         sh = str(r.get('shift', '') or '—')
@@ -280,10 +325,12 @@ def build_reports() -> dict:
     o_heads = ['Смена', 'Всего', 'Оплачено', 'Должников', 'Собрано', 'Долг']
     o_rows = []
     for sh, s in by_shift.items():
-        debtors = s['всего'] - s['оплачено']
+        debtors = sum(1 for r in rows
+                      if str(r.get('shift', '') or '—') == sh
+                      and str(r.get('status', '')) in ('Новая', 'Перезвонить', 'Думает'))
         o_rows.append([sh, s['всего'], s['оплачено'], debtors,
                        int(s['собрано']), int(s['долг'])])
-    write_sheet_local('Отчёт', o_heads, o_rows)
+    write_sheet_local('Отчёт', o_heads, o_rows, force=True)
     return {'должников': len(d_rows), 'смен': len(o_rows)}
 
 
@@ -344,7 +391,11 @@ def upsert(data: dict) -> tuple[str, str, list[str]]:
         cid = str(ws.cell(target, 1).value)
         action = 'обновлён'
     else:
-        cid = str(int(datetime.now().timestamp()))[-6:]
+        import uuid as _uuid
+        cid = _uuid.uuid4().hex[:8]
+        while any(str(r[0]) == cid
+                  for r in ws.iter_rows(min_row=2, values_only=True)):
+            cid = _uuid.uuid4().hex[:8]
         flat['id'], flat['created'] = cid, now_s
         if not flat.get('status'):
             flat['status'] = 'Новая'
@@ -363,7 +414,7 @@ def upsert(data: dict) -> tuple[str, str, list[str]]:
                 vals = list(r) + [''] * (len(heads) - len(r))
                 ws2.append(vals[:len(heads)])
                 break
-    wb.save(FILE)
+    _save_wb(wb)
 
     # Яндекс.Диск — источник правды: заливаем ВЕСЬ файл (дешево, ~9КБ).
     # Перед заливкой текущий remote уходит в бэкап (см. yandex_store).
@@ -421,9 +472,9 @@ def find_ids(query: str) -> list[dict]:
 
 
 def update_by_id(cid: str, fields: dict) -> bool:
-    wb = _ensure_wb()
-    fields = dict(fields or {})
+    fields = validate_row(dict(fields or {})) if fields else {}
     fields['обновлено'] = datetime.now().strftime('%d.%m.%Y %H:%M')
+    wb = _ensure_wb()
     extra_keys = [k for k in fields if k not in CORE_KEYS]
     heads = _ensure_columns(wb, extra_keys)
     ws = wb['Общая']
@@ -438,7 +489,7 @@ def update_by_id(cid: str, fields: dict) -> bool:
                             ws.cell(idx, col_i).value = old + ' | ' + str(fields[key])
                     else:
                         ws.cell(idx, col_i).value = str(fields[key])
-            wb.save(FILE)
+            _save_wb(wb)
             shift = str(fields.get('shift', '') or ws.cell(idx, heads.index(KEY_TO_HEADER['shift']) + 1).value or '')
             if shift in wb.sheetnames:
                 ws2 = wb[shift]
@@ -450,7 +501,7 @@ def update_by_id(cid: str, fields: dict) -> bool:
                     if str(r3[0]) == str(cid):
                         ws2.append(list(r3)[:len(heads)])
                         break
-                wb.save(FILE)
+                _save_wb(wb)
             _sync_row_to_google(wb, heads, str(cid), shift)
             if str(fields.get('status', '')) == 'Перезвонил':
                 try:
@@ -476,7 +527,7 @@ def delete_by_id(cid: str) -> bool:
                 found = True
                 break
     if found:
-        wb.save(FILE)
+        _save_wb(wb)
         try:
             import yandex_store
             yandex_store.sync_after_change('delete')
@@ -497,7 +548,7 @@ def delete_row_at(sheet: str, row1: int) -> bool:
     if row1 < 2 or row1 > ws.max_row:
         return False
     ws.delete_rows(row1)
-    wb.save(FILE)
+    _save_wb(wb)
     try:
         import yandex_store
         yandex_store.sync_after_change('delete-at')
@@ -531,7 +582,7 @@ def update_in_sheet(sheet: str, cid: str, fields: dict) -> bool:
                 key = HEADER_TO_KEY.get(h, h.lower())
                 if key in fields and fields[key] not in (None, ''):
                     ws.cell(idx, col_i).value = str(fields[key])
-            wb.save(FILE)
+            _save_wb(wb)
             return True
     return False
 
@@ -616,7 +667,7 @@ def _apply_core_edits(sheet: str, heads: list, rows: list, recs: list) -> str:
             if sheet == 'Общая':
                 if update_by_id(cid, fields):
                     upd += 1
-            elif update_in_sheet(sheet, cid, fields) and update_by_id(cid, fields):
+            elif update_by_id(cid, fields) and update_in_sheet(sheet, cid, fields):
                 upd += 1
         else:
             d, extra = {}, {}
@@ -658,7 +709,7 @@ def _apply_core_edits(sheet: str, heads: list, rows: list, recs: list) -> str:
                 ws = wb[sheet]
                 for col_i, v in enumerate(vals, start=1):
                     ws.cell(j + 2, col_i).value = v
-                wb.save(FILE)
+                _save_wb(wb)
             if _google_ok():
                 try:
                     _google_write_row(sheet, j + 2, vals)
@@ -671,6 +722,11 @@ def _apply_core_edits(sheet: str, heads: list, rows: list, recs: list) -> str:
         cid = str(r.get('id', ''))
         if cid and cid not in seen_ids and delete_by_id(cid):
             del_n += 1
+            if del_n >= 5:
+                # массовое удаление из сетки без явной команды — стоп,
+                # остальное только по одному через «Удалить строку»
+                return (f'Правок: {upd}, новых строк: {new_n}, удалено: {del_n}. '
+                        f'⛔ Больше 5 удалений за раз не делаю — удаляй по одному.')
     return f'Правок: {upd}, новых строк: {new_n}, удалено: {del_n}.'
 
 
@@ -692,7 +748,7 @@ def _apply_free_edits(sheet: str, heads: list, rows: list, recs: list) -> str:
             continue
         for col_i, v in enumerate(new, start=1):
             ws.cell(i + 2, col_i).value = v
-        wb.save(FILE)
+        _save_wb(wb)
         if _google_ok():
             try:
                 _google_write_row(sheet, i + 2, new)
@@ -702,7 +758,7 @@ def _apply_free_edits(sheet: str, heads: list, rows: list, recs: list) -> str:
     for j in range(n_old, m):
         vals = [norm(data_recs[j].get(h)) for h in (heads or [])]
         ws.append(vals)
-        wb.save(FILE)
+        _save_wb(wb)
         if _google_ok():
             try:
                 _google_append_row(sheet, vals)
@@ -722,7 +778,7 @@ def set_shift(cid: str, shift: str) -> bool:
 def add_column(name: str) -> list:
     wb = _ensure_wb()
     heads = _ensure_columns(wb, [name.strip().lower()[:30]])
-    wb.save(FILE)
+    _save_wb(wb)
     try:
         import yandex_store
         yandex_store.sync_after_change('колонка')

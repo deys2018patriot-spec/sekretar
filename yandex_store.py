@@ -20,8 +20,8 @@ SNAP_DIR = os.path.join(BASE, 'snapshots')
 MAX_BACKUPS = 10
 
 # Отложенная заливка: bulk-операции ставят defer(True), делают N правок
-# без сети, потом defer(False) + одна заливка.
-_DEFER = False
+# без сети, потом defer(False) + одна заливка. Счётчик — вложенность безопасна.
+_DEFER = 0
 LAST_FILE = os.path.join(BASE, '.ya_last')
 
 
@@ -102,7 +102,7 @@ def backup_remote() -> dict:
         _ensure_dirs(y)
         if not y.exists(MASTER_PATH):
             return {'ok': True, 'reason': 'бэкапить нечего'}
-        stamp = datetime.now().strftime('%Y%m%d_%H%M')
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         dst = f'{BACKUP_DIR}/clients_{stamp}.xlsx'
         y.copy(MASTER_PATH, dst, overwrite=True)
         try:
@@ -130,7 +130,10 @@ def upload_master(reason: str = '') -> dict:
         return {'ok': False, 'reason': 'нет локального файла'}
     try:
         _ensure_dirs(y)
-        backup_remote()
+        br = backup_remote()
+        if not br.get('ok'):
+            return {'ok': False,
+                    'reason': 'мастер НЕ тронут: ' + br.get('reason', '')}
         y.upload(LOCAL_XLSX, MASTER_PATH, overwrite=True)
         _mark_sync()
         return {'ok': True, 'reason': f'залито на Диск ({reason})'}
@@ -140,7 +143,7 @@ def upload_master(reason: str = '') -> dict:
 
 def sync_after_change(reason: str = '') -> dict:
     """Вызывать из storage после КАЖДОЙ мутации. Не роняет."""
-    if _DEFER:
+    if _DEFER > 0:
         return {'ok': True, 'reason': 'отложено (bulk)'}
     try:
         r = upload_master(reason)
@@ -154,12 +157,16 @@ def sync_after_change(reason: str = '') -> dict:
 
 
 def defer(on: bool) -> dict:
-    """Вкл/выкл отложенной заливки. Выключение = одна заливка."""
+    """Вкл/выкл отложенной заливки (счётчик — вложенность безопасна).
+    Обнуление счётчика = одна заливка."""
     global _DEFER
-    _DEFER = bool(on)
-    if not _DEFER:
+    if on:
+        _DEFER += 1
+        return {'ok': True, 'reason': 'defer on'}
+    _DEFER = max(0, _DEFER - 1)
+    if _DEFER == 0:
         return sync_after_change('bulk')
-    return {'ok': True, 'reason': 'defer on'}
+    return {'ok': True, 'reason': 'defer вложен'}
 
 
 def _save_last(r: dict) -> None:
@@ -229,11 +236,12 @@ def list_backups() -> list:
 
 
 def restore_backup(path: str) -> dict:
-    """Восстановить мастер из бэкапа: скачать бэкап → локально → залить как мастер."""
+    """Восстановить мастер из бэкапа: снапшот текущего → скачать бэкап → залить как мастер."""
     y = _client()
     if y is None:
         return {'ok': False, 'reason': 'нет токена'}
     try:
+        snapshot('перед откатом')
         y.download(path, LOCAL_XLSX)
         _mark_sync()
         up = upload_master('откат к ' + path.split('/')[-1])

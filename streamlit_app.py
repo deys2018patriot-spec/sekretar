@@ -372,6 +372,14 @@ with tab_tbl:
         st.success(_le)
     st.subheader('📊 Таблицы — копия Яндекс.Диска')
     st.caption('Вся таблица копируется с Диска при каждом открытии и по кнопке ниже.')
+    try:
+        import yandex_store as _ys7
+        _lst = _ys7.last_status()
+        if _lst.get('ts'):
+            _mark = '☁️' if _lst.get('ok') else '⚠️'
+            st.caption(f"{_mark} Последняя заливка: {_lst['ts'][:16].replace('T', ' ')} ({_lst.get('reason', '')[:80]})")
+    except Exception:
+        pass
     if st.button('🔄 Обновить с Диска', use_container_width=True):
         with st.spinner('Копирую с Яндекс.Диска...'):
             rep = web_bootstrap.pull_google_to_local(force=True)
@@ -384,6 +392,13 @@ with tab_tbl:
         st.rerun()
     with st.expander('📥 Переехать с Google Sheets (разово)', expanded=False):
         st.caption('Соберёт все листы из Google-таблицы в один файл и зальёт мастер на Яндекс.Диск. Кнопка нужна один раз.')
+        try:
+            import yandex_store as _ys6
+            _master_here = _ys6.remote_exists()
+        except Exception:
+            _master_here = False
+        if _master_here:
+            st.info('Мастер уже на Диске — повторный переезд перезапишет его. Для повтора удали файл на Диске вручную.')
         if st.button('📥 Переехать с Google', use_container_width=True):
             with st.spinner('Переезжаю с Google на Диск...'):
                 try:
@@ -418,6 +433,7 @@ with tab_tbl:
                 st.error(f'Не сохранилось: {e}')
             st.rerun()
     with st.expander('⏪ Откат к бэкапу', expanded=False):
+        st.caption('Восстановление заменяет текущий мастер. Перед откатом делается автоснапшот.')
         try:
             import yandex_store as _ys5
             backs = _ys5.list_backups()
@@ -427,7 +443,11 @@ with tab_tbl:
             st.caption('Бэкапов на Диске пока нет.')
         else:
             _sel = st.selectbox('Бэкап', backs, key='rb_sel')
+            _understand = st.checkbox('Понимаю: текущий мастер будет заменён', key='rb_ok')
             if st.button('⏪ Восстановить выбранный', use_container_width=True):
+                if not _understand:
+                    st.warning('Поставь галочку «Понимаю» — откат необратим без неё.')
+                    st.stop()
                 with st.spinner('Восстанавливаю...'):
                     rep = _ys5.restore_backup(_sel)
                 st.session_state['_last_edit'] = ('✅ ' if rep.get('ok') else '⚠️ ') + rep.get('reason', '')
