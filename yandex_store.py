@@ -174,8 +174,9 @@ def defer(on: bool) -> dict:
 def _save_last(r: dict) -> None:
     try:
         import json
+        ok = r.get('ok')
         with open(LAST_FILE, 'w', encoding='utf-8') as f:
-            json.dump({'ok': bool(r.get('ok')),
+            json.dump({'ok': (None if ok is None else bool(ok)),
                        'reason': str(r.get('reason', ''))[:160],
                        'ts': datetime.now().isoformat()}, f,
                       ensure_ascii=False)
