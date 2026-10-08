@@ -588,22 +588,75 @@ with tab_tbl:
             return keys, [[str((d or {}).get(k, '')) for k in keys] for d in lst]
         raise ValueError(f'формат .{ext or "?"} не поддерживаю (xlsx, xls, ods, csv, json)')
 
+    def clean_sheet_name(raw: str, taken: set) -> str:
+        """Имя листа для Excel: без : \\ / ? * [ ], до 31 символа, уникальное."""
+        base = ''.join(c if (c.isalnum() or c in ' _-') else '_' for c in (raw or '')).strip()[:31] or 'Лист'
+        name, i = base, 2
+        while name in taken:
+            suffix = f'_{i}'
+            name, i = base[:31 - len(suffix)] + suffix, i + 1
+        taken.add(name)
+        return name
+
+    def parse_table_file_all(fname: str, raw: bytes) -> list:
+        """Все листы xlsx/xlsm → [(имя, шапка, строки)]. Остальные форматы — один лист."""
+        import io
+        ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else ''
+        if ext in ('xlsx', 'xlsm'):
+            from openpyxl import load_workbook
+            wb = load_workbook(io.BytesIO(raw), data_only=True)
+            out = []
+            for ws in wb.worksheets[:300]:
+                if ws.sheet_state != 'visible':
+                    continue
+                vals = [r for r in ws.iter_rows(values_only=True)
+                        if any(v not in (None, '') for v in (r or ()))]
+                if not vals:
+                    continue
+                header = [str(x or '').strip() or f'col{i + 1}' for i, x in enumerate(vals[0])]
+                out.append((ws.title, header,
+                            [[_num(x) for x in r] + [''] * max(0, len(header) - len(r)) for r in vals[1:]]))
+            return out
+        header, rows = parse_table_file(fname, raw)
+        return [(None, header, rows)] if header else []
+
     with st.expander('📎 Прикрепить файл таблицы (xlsx, xls, ods, csv, json)', expanded=False):
-        st.caption('Файл станет листом здесь и в мастере на Яндекс.Диске — там хранится навсегда. '
+        st.caption('Каждый лист файла станет листом здесь и в мастере на Яндекс.Диске — там хранится навсегда. '
                    'Оригинал тоже уйдёт на Яндекс.Диск.')
         upf = st.file_uploader('Файл таблицы', type=['xlsx', 'xlsm', 'xls', 'ods', 'csv', 'tsv', 'txt', 'json'],
                                key='table_file', label_visibility='collapsed')
-        if upf is not None and st.button('📥 Импортировать как лист'):
+        if upf is not None and st.button('📥 Импортировать (все листы)'):
             with st.spinner('Импортирую...'):
                 try:
-                    header, rows_f = parse_table_file(upf.name, upf.getvalue())
-                    if not header:
+                    parts = parse_table_file_all(upf.name, upf.getvalue())
+                    if not parts:
                         st.error('Файл пустой.')
                         st.stop()
-                    base = (upf.name.rsplit('.', 1)[0] if '.' in upf.name else upf.name)
-                    base = ''.join(c if (c.isalnum() or c in ' _-') else '_' for c in base).strip()[:30] or 'Лист'
                     import storage as _st2
-                    _st2.write_sheet_local(base, header, rows_f)
+                    taken = set(_st2.read_all_sheets().keys())
+                    done, skipped, total = [], [], 0
+                    try:
+                        import yandex_store as _ysd
+                        _ysd.defer(True)
+                    except Exception:
+                        pass
+                    try:
+                        for nm, header, rows_f in parts:
+                            try:
+                                if not nm:
+                                    nm = (upf.name.rsplit('.', 1)[0] if '.' in upf.name else upf.name)
+                                nm = clean_sheet_name(nm, taken)
+                                _st2.write_sheet_local(nm, header, rows_f)
+                                done.append(f'«{nm}»: {len(rows_f)}')
+                                total += len(rows_f)
+                            except Exception as e:
+                                skipped.append(f'{nm or "?"}: {str(e)[:80]}')
+                    finally:
+                        try:
+                            import yandex_store as _ysd2
+                            _ysd2.defer(False)
+                        except Exception:
+                            pass
                     try:
                         import yandex_store as _ys8
                         _ls8 = _ys8.last_status()
@@ -631,7 +684,8 @@ with tab_tbl:
                         except Exception as e:
                             arch = f' (Яндекс-архив: {str(e)[:120]})'
                     st.session_state['_last_edit'] = (
-                        f'✅ Лист «{base}»: {len(rows_f)} строк{pushed}{arch}.')
+                        f'✅ Импорт: листов {len(done)} ({", ".join(done)[:200]}), строк всего {total}{pushed}{arch}'
+                        + (f'. Пропущено: {"; ".join(skipped)[:200]}' if skipped else '') + '.')
                     st.rerun()
                 except Exception as e:
                     st.error(f'Не импортировалось: {e}')
