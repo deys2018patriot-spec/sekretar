@@ -19,6 +19,68 @@ from reminders import add_local_reminder, due_reminders
 
 st.set_page_config(page_title='Секретарь лагеря', page_icon='📋', layout='centered')
 st.markdown('''<style>
+/* ===== Современная тема (поверх платы) ===== */
+.stApp, [data-testid="stAppViewContainer"] {
+  font-family: 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
+}
+/* Заголовок с градиентом */
+h1 {
+  background: linear-gradient(90deg, #1565c0 10%, #7b1fa2 60%, #c2185b 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.5px;
+}
+h3 { color: #1a237e !important; font-weight: 700 !important; }
+/* Вкладки-пилюли */
+[data-testid="stTabs"] button {
+  border-radius: 999px !important;
+  padding: 6px 18px !important;
+  font-weight: 600 !important;
+}
+[data-testid="stTabs"] button[aria-selected="true"] {
+  background: linear-gradient(90deg, #1565c0, #7b1fa2) !important;
+  color: #fff !important;
+}
+/* Кнопки */
+[data-testid="stButton"] button {
+  border-radius: 12px !important;
+  font-weight: 600 !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,.12);
+  transition: transform .08s ease, box-shadow .15s ease;
+}
+[data-testid="stButton"] button:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(0,0,0,.16); }
+[data-testid="stButton"] button[kind="primary"] {
+  background: linear-gradient(90deg, #2e7d32, #43a047) !important;
+  border: none !important;
+}
+/* Карточки-экспандеры */
+[data-testid="stExpander"] {
+  border: 1px solid #e3e8f0 !important;
+  border-radius: 14px !important;
+  box-shadow: 0 2px 8px rgba(21,101,192,.07);
+  margin-bottom: 10px;
+  background: rgba(255,255,255,.82) !important;
+}
+[data-testid="stExpander"] summary { font-weight: 600 !important; }
+/* Поля ввода */
+[data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea,
+[data-testid="stSelectbox"] div[data-baseweb="select"] {
+  border-radius: 10px !important;
+}
+[data-testid="stSelectbox"] div[data-baseweb="select"] { border: 1px solid #c5cae9 !important; }
+/* Уведомления — скругление */
+[data-testid="stAlert"] { border-radius: 12px !important; }
+/* Подписи тише */
+[data-testid="stCaptionContainer"] { color: #5c6bc0 !important; }
+/* Журнал — моноширинный аккуратный */
+[data-testid="stText"] { font-size: 14px; }
+@media (max-width: 640px) {
+  h1 { font-size: 1.5rem !important; }
+}
+</style>''', unsafe_allow_html=True)
+st.markdown('''<style>
 /* Убрать стандартную серую дымку спиннера */
 [data-testid="stSpinner"] { visibility: hidden !important; height: 0 !important; }
 /* Фон-микросхема: лежит ПОД контентом (z-index 0), контент поднят выше
@@ -733,16 +795,35 @@ with tab_tbl:
             if not isinstance(_cur, int) or _cur < 0 or _cur >= len(rows):
                 _cur = 0
                 st.session_state[_fxk] = 0
-            bc1, bc2, bc3 = st.columns([1, 1, 4])
+            # прыжок к любой строке списком + кнопки листания
+            _jump = st.selectbox('Перейти к строке', options=list(range(len(rows))),
+                                 index=_cur, format_func=lambda i: opts[i] if i < len(opts) else f'{i + 1}.',
+                                 key=f'fxsel_{name}')
+            if _jump != _cur:
+                st.session_state[_fxk] = _jump
+                st.rerun()
+            bc1, bc2, bc3, bc4, bc5 = st.columns([1, 1, 1, 1, 3])
             with bc1:
-                if st.button('◀', key=f'fxp_{name}', use_container_width=True):
-                    st.session_state[_fxk] = max(0, _cur - 1)
+                if st.button('⏮', key=f'fxff_{name}', use_container_width=True):
+                    st.session_state[_fxk] = 0
+                    st.session_state[f'fxsel_{name}'] = 0
                     st.rerun()
             with bc2:
-                if st.button('▶', key=f'fxn_{name}', use_container_width=True):
-                    st.session_state[_fxk] = min(len(rows) - 1, _cur + 1)
+                if st.button('◀', key=f'fxp_{name}', use_container_width=True):
+                    st.session_state[_fxk] = max(0, _cur - 1)
+                    st.session_state[f'fxsel_{name}'] = max(0, _cur - 1)
                     st.rerun()
             with bc3:
+                if st.button('▶', key=f'fxn_{name}', use_container_width=True):
+                    st.session_state[_fxk] = min(len(rows) - 1, _cur + 1)
+                    st.session_state[f'fxsel_{name}'] = min(len(rows) - 1, _cur + 1)
+                    st.rerun()
+            with bc4:
+                if st.button('⏭', key=f'fxll_{name}', use_container_width=True):
+                    st.session_state[_fxk] = len(rows) - 1
+                    st.session_state[f'fxsel_{name}'] = len(rows) - 1
+                    st.rerun()
+            with bc5:
                 st.caption(f"Строка {_cur + 1} из {len(rows)}")
             sel = max(0, min(st.session_state.get(_fxk, 0), len(rows) - 1))
             st.caption(opts[sel] if sel < len(opts) else '')
