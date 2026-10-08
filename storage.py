@@ -583,6 +583,11 @@ def update_in_sheet(sheet: str, cid: str, fields: dict) -> bool:
                 if key in fields and fields[key] not in (None, ''):
                     ws.cell(idx, col_i).value = str(fields[key])
             _save_wb(wb)
+            try:
+                import yandex_store
+                yandex_store.sync_after_change('update-sheet')
+            except Exception as e:
+                print(f'[Yandex] только локально ({e})')
             return True
     return False
 

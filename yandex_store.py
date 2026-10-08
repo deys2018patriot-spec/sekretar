@@ -144,7 +144,9 @@ def upload_master(reason: str = '') -> dict:
 def sync_after_change(reason: str = '') -> dict:
     """Вызывать из storage после КАЖДОЙ мутации. Не роняет."""
     if _DEFER > 0:
-        return {'ok': True, 'reason': 'отложено (bulk)'}
+        r = {'ok': None, 'reason': 'идёт bulk-заливка…'}
+        _save_last(r)
+        return r
     try:
         r = upload_master(reason)
         _save_last(r)

@@ -223,36 +223,48 @@ with tab_req:
 
 
     def force_new_record(data: dict):
-        """Принудительно новая строка (как ветка _force_new в app.py)."""
+        """Принудительно новая строка (как ветка _force_new в app.py).
+        Возвращает (cid, sync_res): extra-колонки создаются, сейв атомарный."""
         import storage as st_mod
+        import uuid as _uuid
         from datetime import datetime
         wb = st_mod._ensure_wb()
         ws = wb['Общая']
-        heads = [str(c.value or '').strip() for c in next(ws.iter_rows(min_row=1, max_row=1))]
+        heads = st_mod._ensure_columns(wb, [k for k in (data.get('extra', {}) or {})])
         flat = {k: data.get(k, '') for k, _ in st_mod.CORE}
         for k, v in (data.get('extra', {}) or {}).items():
             flat[k] = v
-        cid = str(int(datetime.now().timestamp()))[-6:]
+        cid = _uuid.uuid4().hex[:8]
+        try:
+            taken = {str(r[0].value or '') for r in ws.iter_rows(min_row=2)}
+            while cid in taken:
+                cid = _uuid.uuid4().hex[:8]
+        except Exception:
+            pass
         flat['id'], flat['created'] = cid, datetime.now().strftime('%d.%m.%Y %H:%M')
         ws.append(st_mod._row_dict_to_list(heads, flat))
-        wb.save(st_mod.FILE)
+        st_mod._save_wb(wb)
         # Новая запись тоже обязана улететь на Диск (иначе сгорит при редеплое)
         try:
             import yandex_store
-            yandex_store.sync_after_change('новая запись')
+            sres = yandex_store.sync_after_change('новая запись')
         except Exception as e:
             print(f'[Yandex] только локально ({e})')
-        return cid
+            sres = {'ok': False, 'reason': f'только локально ({e})'}
+        return cid, sres
 
 
     def finalize_save(data: dict, mode: str):
         if mode == 'new':
-            cid = force_new_record(data)
-            action, new_cols, removed = 'добавлен (как новый)', list((data.get('extra', {}) or {}).keys()), None
+            cid, sres = force_new_record(data)
+            action = 'добавлен (как новый)'
+            new_cols = [k for k in (data.get('extra', {}) or {})]
+            removed = None
         else:
             res = upsert(data)
             action, cid, new_cols = res[0], res[1], res[2]
             removed = res[3] if len(res) > 3 else None
+            sres = None  # для upsert статус берём из last_status ниже
             if removed and removed.get('local'):
                 action += f" (напоминания сняты: {removed['local']})"
         extra_txt = ''
@@ -266,13 +278,15 @@ with tab_req:
             extra_txt += f"\n🆕 Новые колонки от ИИ: {', '.join(new_cols)}"
         try:
             import yandex_store as _ys3
-            _ls = _ys3.last_status()
+            _ls = sres if mode == 'new' else _ys3.last_status()
             if _ls.get('ok'):
                 extra_txt += '\n☁️ Синхронизировано с Диском'
-            elif _ls.get('ok') is False:
+            elif _ls.get('ok') is None:
+                extra_txt += f"\n⏳ {_ls.get('reason', 'статус Диска неизвестен')[:80]}"
+            else:
                 extra_txt += f"\n⚠️ Только локально ({_ls.get('reason', '')[:80]})"
         except Exception:
-            pass
+            extra_txt += '\n⏳ Статус Диска неизвестен (только локально?)'
         card = (f"✅ {data.get('fio_child') or '?'} — {action}\n"
                 f"Родитель: {data.get('parent_fio') or '—'} | Тел: {data.get('phone') or '—'}\n"
                 f"Смена: {data.get('shift') or '—'} | Статус: {data.get('status')}"
@@ -397,7 +411,8 @@ with tab_tbl:
         import yandex_store as _ys7
         _lst = _ys7.last_status()
         if _lst.get('ts'):
-            _mark = '☁️' if _lst.get('ok') else '⚠️'
+            _ok = _lst.get('ok')
+            _mark = '☁️' if _ok else ('⏳' if _ok is None else '⚠️')
             st.caption(f"{_mark} Последняя заливка: {_lst['ts'][:16].replace('T', ' ')} ({_lst.get('reason', '')[:80]})")
     except Exception:
         pass
@@ -589,7 +604,17 @@ with tab_tbl:
                     base = ''.join(c if (c.isalnum() or c in ' _-') else '_' for c in base).strip()[:30] or 'Лист'
                     import storage as _st2
                     _st2.write_sheet_local(base, header, rows_f)
-                    pushed = ' + мастер на Яндекс.Диске (навсегда)'
+                    try:
+                        import yandex_store as _ys8
+                        _ls8 = _ys8.last_status()
+                        if _ls8.get('ok'):
+                            pushed = ' + мастер на Яндекс.Диске (навсегда)'
+                        elif _ls8.get('ok') is None:
+                            pushed = f" + ⏳ ({_ls8.get('reason', '')[:80]})"
+                        else:
+                            pushed = f" + ⚠️ только локально ({_ls8.get('reason', '')[:80]})"
+                    except Exception:
+                        pushed = ' + ⏳ статус Диска неизвестен'
                     arch = ''
                     tok = os.environ.get('YANDEX_DISK_TOKEN', '').strip()
                     if tok:
