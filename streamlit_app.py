@@ -794,35 +794,30 @@ with tab_tbl:
             _cur = st.session_state.get(_fxk, 0)
             if not isinstance(_cur, int) or _cur < 0 or _cur >= len(rows):
                 _cur = 0
-                st.session_state[_fxk] = 0
-            # прыжок к любой строке списком + кнопки листания
-            _jump = st.selectbox('Перейти к строке', options=list(range(len(rows))),
-                                 index=_cur, format_func=lambda i: opts[i] if i < len(opts) else f'{i + 1}.',
-                                 key=f'fxsel_{name}')
-            if _jump != _cur:
-                st.session_state[_fxk] = _jump
-                st.rerun()
+            # прыжок к любой строке списком + кнопки листания.
+            # Селектор сам хранит индекс под _fxk; кнопки меняют его через
+            # on_click (колбэки бегут ДО создания виджетов — правило Streamlit).
+            def _go(idx, _k=_fxk, _n=len(rows)):
+                st.session_state[_k] = max(0, min(int(idx), _n - 1))
+            st.selectbox('Перейти к строке', options=list(range(len(rows))), index=_cur,
+                         format_func=lambda i: opts[i] if i < len(opts) else f'{i + 1}.',
+                         key=_fxk)
+            _cur = st.session_state.get(_fxk, 0)
+            if not isinstance(_cur, int) or _cur < 0 or _cur >= len(rows):
+                _cur = 0
             bc1, bc2, bc3, bc4, bc5 = st.columns([1, 1, 1, 1, 3])
             with bc1:
-                if st.button('⏮', key=f'fxff_{name}', use_container_width=True):
-                    st.session_state[_fxk] = 0
-                    st.session_state[f'fxsel_{name}'] = 0
-                    st.rerun()
+                st.button('⏮', key=f'fxff_{name}', use_container_width=True,
+                          on_click=_go, args=(0,))
             with bc2:
-                if st.button('◀', key=f'fxp_{name}', use_container_width=True):
-                    st.session_state[_fxk] = max(0, _cur - 1)
-                    st.session_state[f'fxsel_{name}'] = max(0, _cur - 1)
-                    st.rerun()
+                st.button('◀', key=f'fxp_{name}', use_container_width=True,
+                          on_click=_go, args=(_cur - 1,))
             with bc3:
-                if st.button('▶', key=f'fxn_{name}', use_container_width=True):
-                    st.session_state[_fxk] = min(len(rows) - 1, _cur + 1)
-                    st.session_state[f'fxsel_{name}'] = min(len(rows) - 1, _cur + 1)
-                    st.rerun()
+                st.button('▶', key=f'fxn_{name}', use_container_width=True,
+                          on_click=_go, args=(_cur + 1,))
             with bc4:
-                if st.button('⏭', key=f'fxll_{name}', use_container_width=True):
-                    st.session_state[_fxk] = len(rows) - 1
-                    st.session_state[f'fxsel_{name}'] = len(rows) - 1
-                    st.rerun()
+                st.button('⏭', key=f'fxll_{name}', use_container_width=True,
+                          on_click=_go, args=(len(rows) - 1,))
             with bc5:
                 st.caption(f"Строка {_cur + 1} из {len(rows)}")
             sel = max(0, min(st.session_state.get(_fxk, 0), len(rows) - 1))
